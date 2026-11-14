@@ -109,6 +109,8 @@ function buildGlobe() {
     skyAtmosphere: body === 'mars' ? false : undefined
   });
   viewer.scene.globe.showGroundAtmosphere = body !== 'mars';
+  // The Mars texture is one image, so it blurs up close; keep the camera far enough away
+  if (body === 'mars') viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1200000;
 
   handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
