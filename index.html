@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earth &amp; Mars Viewer</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #wrap { display: flex; height: 100%; }
+  #globe { flex: 1; min-width: 0; }
+  #panel { width: 400px; padding: 1rem; overflow-y: auto; background: #111; color: #eee; box-sizing: border-box; }
+  #panel h2 { margin: 0 0 .6rem; }
+  .row { margin: .6rem 0; font-size: .9rem; }
+  label { margin-right: .6rem; }
+  input[type=number] { width: 6.5rem; padding: .3rem; }
+  button { padding: .4rem .9rem; cursor: pointer; }
+  #info { font-size: .85rem; color: #aaa; min-height: 2.4rem; }
+  #detail { height: 340px; border-radius: 6px; margin-top: .6rem; background: #222; }
+  .hint { font-size: .8rem; color: #888; }
+  @media (max-width: 800px) {
+    #wrap { flex-direction: column; }
+    #globe { flex: none; height: 50vh; }
+    #panel { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="globe"></div>
+  <div id="panel">
+    <h2>Earth &amp; Mars Viewer</h2>
+
+    <div class="row">
+      <b>Planet:</b>
+      <label><input type="radio" name="body" value="earth" checked> Earth</label>
+      <label><input type="radio" name="body" value="mars"> Mars</label>
+    </div>
+
+    <div class="row">
+      <b>Select:</b>
+      <label><input type="radio" name="mode" value="point" checked> Point</label>
+      <label><input type="radio" name="mode" value="square"> Square (2 corners)</label>
+      <button id="clear">Clear</button>
+    </div>
+
+    <div class="row">
+      <b>Or type coordinates:</b><br>
+      <label>Lat <input type="number" id="lat" value="50.0647" step="any"></label>
+      <label>Lon <input type="number" id="lon" value="19.9125" step="any"></label>
+      <button id="go">Go</button>
+    </div>
+
+    <div class="row">
+      <label>Detail zoom <input type="range" id="zoom" min="3" max="17" value="12"></label>
+      <span id="zoomVal">12</span>
+    </div>
+
+    <div id="info">Drag the globe to rotate, scroll to zoom, click to choose a place.</div>
+    <div id="detail"></div>
+    <div class="hint">Imagery: Esri World Imagery (Earth), NASA Mars Trek / USGS Viking mosaic (Mars).
+      Mars longitude is east-positive (-180..180 or 0..360).</div>
+  </div>
+</div>
+
+<script>
+const MARS = new Cesium.Ellipsoid(3396190, 3396190, 3376200);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const TREK = 'https://trek.nasa.gov/tiles/Mars/EQ/Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg';
+
+let body = 'earth', viewer = null, handler = null, detail = null, overlay = null;
+let ellipsoid = Cesium.Ellipsoid.WGS84;
+let selection = null, cornerA = null, entities = [];
+
+const $ = (id) => document.getElementById(id);
+const mode = () => document.querySelector('input[name=mode]:checked').value;
+const info = $('info');
+
+/* ---------- Globe ---------- */
+function buildGlobe() {
+  if (handler) { handler.destroy(); handler = null; }
+  if (viewer) { viewer.destroy(); viewer = null; }
+
+  ellipsoid = body === 'mars' ? MARS : Cesium.Ellipsoid.WGS84;
+  Cesium.Ellipsoid.default = ellipsoid;   // must be set before the Viewer is created
+
+  const provider = body === 'mars'
+    ? new Cesium.UrlTemplateImageryProvider({
+        url: TREK,
+        tilingScheme: new Cesium.GeographicTilingScheme({ ellipsoid }),
+        maximumLevel: 7,
+        credit: 'NASA Mars Trek / USGS'
+      })
+    : new Cesium.UrlTemplateImageryProvider({
+        url: ESRI,
+        maximumLevel: 18,
+        credit: 'Esri, Maxar, Earthstar Geographics'
+      });
+
+  viewer = new Cesium.Viewer('globe', {
+    baseLayer: new Cesium.ImageryLayer(provider),
+    baseLayerPicker: false, geocoder: false, homeButton: false,
+    sceneModePicker: false, navigationHelpButton: false,
+    animation: false, timeline: false, fullscreenButton: false,
+    infoBox: false, selectionIndicator: false,
+    skyAtmosphere: body === 'mars' ? false : undefined
+  });
+  viewer.scene.globe.showGroundAtmosphere = body !== 'mars';
+
+  handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
+
+function onGlobeClick(click) {
+  const cart = viewer.camera.pickEllipsoid(click.position, ellipsoid);
+  if (!cart) return;
+  const c = Cesium.Cartographic.fromCartesian(cart, ellipsoid);
+  const lon = Cesium.Math.toDegrees(c.longitude);
+  const lat = Cesium.Math.toDegrees(c.latitude);
+
+  if (mode() === 'point') {
+    setPoint(lat, lon);
+  } else if (!cornerA) {
+    clearSelection();
+    cornerA = { lat, lon };
+    addPin(lat, lon, Cesium.Color.YELLOW, 8);
+    info.textContent = 'First corner set. Click the opposite corner.';
+  } else {
+    setSquare(Math.min(cornerA.lon, lon), Math.min(cornerA.lat, lat),
+              Math.max(cornerA.lon, lon), Math.max(cornerA.lat, lat));
+  }
+}
+
+function addPin(lat, lon, color, size) {
+  entities.push(viewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(lon, lat, 0, ellipsoid),
+    point: { pixelSize: size, color, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 }
+  }));
+}
+
+function clearSelection() {
+  if (viewer) entities.forEach(e => viewer.entities.remove(e));
+  entities = []; selection = null; cornerA = null;
+  if (overlay) overlay.clearLayers();
+}
+
+/* ---------- Selection ---------- */
+function setPoint(lat, lon) {
+  clearSelection();
+  selection = { type: 'point', lat, lon };
+  addPin(lat, lon, Cesium.Color.RED, 12);
+  info.textContent = 'Point: ' + lat.toFixed(4) + ', ' + lon.toFixed(4);
+  updateDetail();
+}
+
+function setSquare(w, s, e, n) {
+  clearSelection();
+  selection = { type: 'square', w, s, e, n };
+  entities.push(viewer.entities.add({
+    rectangle: {
+      coordinates: Cesium.Rectangle.fromDegrees(w, s, e, n),
+      material: Cesium.Color.RED.withAlpha(0.3),
+      outline: true, outlineColor: Cesium.Color.RED
+    }
+  }));
+  info.textContent = 'Square: W ' + w.toFixed(3) + ', S ' + s.toFixed(3) +
+                     ', E ' + e.toFixed(3) + ', N ' + n.toFixed(3);
+  updateDetail();
+}
+
+/* ---------- Detail map (flat picture of the selection) ---------- */
+function buildDetail() {
+  if (detail) { detail.remove(); detail = null; }
+  if (body === 'mars') {
+    detail = L.map('detail', { crs: L.CRS.EPSG4326, minZoom: 0, maxZoom: 7 });
+    L.tileLayer(TREK, { maxNativeZoom: 7, maxZoom: 7, attribution: 'NASA Mars Trek / USGS' }).addTo(detail);
+    detail.setView([0, 0], 1);
+  } else {
+    detail = L.map('detail');
+    L.tileLayer(ESRI, { maxZoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics' }).addTo(detail);
+    detail.setView([20, 0], 2);
+  }
+  overlay = L.layerGroup().addTo(detail);
+}
+
+function updateDetail() {
+  if (!detail || !selection) return;
+  overlay.clearLayers();
+  if (selection.type === 'point') {
+    L.circleMarker([selection.lat, selection.lon],
+      { radius: 8, color: '#fff', weight: 2, fillColor: '#f00', fillOpacity: 1 }).addTo(overlay);
+    detail.setView([selection.lat, selection.lon], +$('zoom').value);
+  } else {
+    const b = [[selection.s, selection.w], [selection.n, selection.e]];
+    L.rectangle(b, { color: '#f00', weight: 2, fillOpacity: 0.15 }).addTo(overlay);
+    detail.fitBounds(b);
+  }
+}
+
+/* ---------- UI wiring ---------- */
+function configureZoomSlider() {
+  const z = $('zoom');
+  if (body === 'mars') { z.min = 1; z.max = 7; z.value = 5; }
+  else { z.min = 3; z.max = 17; z.value = 12; }
+  $('zoomVal').textContent = z.value;
+}
+
+function switchBody(newBody) {
+  body = newBody;
+  selection = null; cornerA = null; entities = [];
+  configureZoomSlider();
+  buildGlobe();
+  buildDetail();
+  info.textContent = 'Showing ' + (body === 'mars' ? 'Mars' : 'Earth') +
+                     '. Click the globe to choose a place.';
+}
+
+document.querySelectorAll('input[name=body]').forEach(r =>
+  r.addEventListener('change', () => switchBody(r.value)));
+document.querySelectorAll('input[name=mode]').forEach(r =>
+  r.addEventListener('change', clearSelection));
+$('clear').onclick = clearSelection;
+
+$('zoom').addEventListener('input', () => {
+  $('zoomVal').textContent = $('zoom').value;
+  if (selection && selection.type === 'point') updateDetail();
+});
+
+$('go').onclick = () => {
+  let lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
+  if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 360) {
+    info.textContent = 'Enter a latitude between -90 and 90 and a longitude between -180 and 360.';
+    return;
+  }
+  if (lon > 180) lon -= 360;   // accept 0..360 east longitudes
+  setPoint(lat, lon);
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(lon, lat, body === 'mars' ? 2500000 : 1500000, ellipsoid),
+    duration: 1.5
+  });
+};
+
+switchBody('earth');
+</script>
+</body>
+</html>
