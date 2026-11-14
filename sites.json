@@ -1,0 +1,15 @@
+[
+  {
+    "id": 1,
+    "mars": {
+      "name": "Starship proposed landing site",
+      "lat": 39.8,
+      "lon": -157.39
+    },
+    "earth": {
+      "name": "Mars Desert Research Station",
+      "lat": 38.4053,
+      "lon": -110.79
+    }
+  }
+]
