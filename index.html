@@ -1,35 +1,279 @@
-import webbrowser
-from urllib.parse import urlencode
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planet vs Earth</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: #000; color: #eee; font-family: system-ui, sans-serif; }
 
-# Your live site (GitHub Pages). To test locally instead, run `python -m http.server`
-# in the folder with index.html and use "http://localhost:8000/".
-SITE = "https://tenuesjpg2137.github.io/HackathonNASA/"
+  #bar {
+    flex: none; display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+    padding: .5rem .9rem; background: #151515; font-size: .9rem; border-bottom: 1px solid #333;
+  }
+  #bar b.title { font-size: 1.05rem; }
+  button { padding: .35rem .8rem; cursor: pointer; border: 1px solid #666; background: #222; color: #eee; border-radius: 4px; }
+  button.active { background: #c1440e; border-color: #c1440e; }
+  input[type=number] { width: 6rem; padding: .3rem; }
+  label { white-space: nowrap; }
 
+  #split { flex: 1; display: flex; min-height: 0; }
+  .pane { flex: 1; position: relative; min-width: 0; }
+  #globe, #earth { position: absolute; inset: 0; }
+  #left { border-right: 2px solid #333; }
+  .label {
+    position: absolute; top: 8px; left: 8px; z-index: 1000; pointer-events: none;
+    background: rgba(0, 0, 0, .65); padding: .2rem .6rem; border-radius: 4px; font-size: .85rem;
+  }
 
-def show_point(body, lat, lon, text=None, earth_zoom=None):
-    """Open the site with a point selected.
-    body: "mars" (or "moon" once enabled); lat/lon in degrees (east-positive longitude)."""
-    params = {"body": body, "lat": lat, "lon": lon}
-    if text:
-        params["text"] = text            # optional: your own sentence for the text line
-    if earth_zoom:
-        params["zoom"] = earth_zoom      # optional: 3..17, how close the Earth picture is
-    url = SITE + "?" + urlencode(params)
-    webbrowser.open(url)
-    return url
+  #text { flex: none; padding: .7rem 1rem; background: #111; border-top: 1px solid #333; font-size: 1rem; min-height: 1.4rem; }
 
+  @media (max-width: 800px) {
+    #split { flex-direction: column; }
+    #left { border-right: none; border-bottom: 2px solid #333; }
+  }
+</style>
+</head>
+<body>
 
-def show_square(body, west, south, east, north, text=None):
-    """Open the site with a square (bounding box) selected."""
-    params = {"body": body, "w": west, "s": south, "e": east, "n": north}
-    if text:
-        params["text"] = text
-    url = SITE + "?" + urlencode(params)
-    webbrowser.open(url)
-    return url
+<div id="bar">
+  <b class="title">Planet vs Earth</b>
+  <span id="tabs"></span>
+  <span>
+    <label><input type="radio" name="mode" value="point" checked> Point</label>
+    <label><input type="radio" name="mode" value="square"> Square (2 corners)</label>
+    <button id="clear">Clear</button>
+  </span>
+  <span>
+    <label>Lat <input type="number" id="lat" value="18.38" step="any"></label>
+    <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
+    <button id="go">Go</button>
+  </span>
+  <label>Earth zoom <input type="range" id="zoom" min="3" max="17" value="13"> <span id="zoomVal">13</span></label>
+</div>
 
+<div id="split">
+  <div class="pane" id="left"><div id="globe"></div><div class="label" id="leftLabel"></div></div>
+  <div class="pane" id="right"><div id="earth"></div><div class="label">Earth - same coordinates</div></div>
+</div>
 
-if __name__ == "__main__":
-    # Replace this with the values your own code returns:
-    lat, lon = 18.38, 77.58              # Jezero Crater on Mars
-    print(show_point("mars", lat, lon))
+<div id="text">Drag the globe to rotate, scroll to zoom, click to choose a place.</div>
+
+<script>
+/* ---------- Settings ---------- */
+// To add the Moon later: put 'moon' in this list and upload moon.jpg (4096x2048) next to index.html
+const ENABLED = ['mars'];
+
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+const BODIES = {
+  mars: {
+    label: 'Mars', radii: [3396190, 3396190, 3376200],
+    texture: 'mars.jpg', minCam: 1200000, flyHeight: 1500000,
+    credit: 'NASA / JPL / USGS Viking MDIM 2.1'
+  },
+  moon: {
+    label: 'Moon', radii: [1737400, 1737400, 1737400],
+    texture: 'moon.jpg', minCam: 600000, flyHeight: 900000,
+    credit: 'NASA / LRO WAC'
+  }
+};
+
+let key = ENABLED[0], B = BODIES[key];
+let viewer = null, handler = null, ellipsoid = null;
+let selection = null, cornerA = null, entities = [];
+
+const $ = (id) => document.getElementById(id);
+const mode = () => document.querySelector('input[name=mode]:checked').value;
+const setText = (t) => { $('text').textContent = t; };
+const HINT = 'Drag the globe to rotate, scroll to zoom, click to choose a place.';
+
+/* ---------- Right side: Earth picture ---------- */
+const earth = L.map('earth').setView([20, 0], 2);
+L.tileLayer(ESRI, { maxZoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics' }).addTo(earth);
+const overlay = L.layerGroup().addTo(earth);
+
+function updateEarth() {
+  overlay.clearLayers();
+  if (!selection) return;
+  if (selection.type === 'point') {
+    L.circleMarker([selection.lat, selection.lon],
+      { radius: 8, color: '#fff', weight: 2, fillColor: '#f00', fillOpacity: 1 }).addTo(overlay);
+    earth.setView([selection.lat, selection.lon], +$('zoom').value);
+  } else {
+    const b = [[selection.s, selection.w], [selection.n, selection.e]];
+    L.rectangle(b, { color: '#f00', weight: 2, fillOpacity: 0.1 }).addTo(overlay);
+    earth.fitBounds(b);
+  }
+}
+
+/* ---------- Left side: Mars / Moon globe ---------- */
+function buildGlobe() {
+  if (handler) { handler.destroy(); handler = null; }
+  if (viewer) { viewer.destroy(); viewer = null; }
+
+  ellipsoid = new Cesium.Ellipsoid(B.radii[0], B.radii[1], B.radii[2]);
+  Cesium.Ellipsoid.default = ellipsoid;   // must be set before the Viewer is created
+
+  viewer = new Cesium.Viewer('globe', {
+    baseLayer: Cesium.ImageryLayer.fromProviderAsync(
+      Cesium.SingleTileImageryProvider.fromUrl(B.texture, { ellipsoid, credit: B.credit })),
+    baseLayerPicker: false, geocoder: false, homeButton: false,
+    sceneModePicker: false, navigationHelpButton: false,
+    animation: false, timeline: false, fullscreenButton: false,
+    infoBox: false, selectionIndicator: false,
+    skyAtmosphere: false
+  });
+  viewer.scene.globe.showGroundAtmosphere = false;
+  viewer.scene.screenSpaceCameraController.minimumZoomDistance = B.minCam;
+
+  handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
+
+function onGlobeClick(click) {
+  const cart = viewer.camera.pickEllipsoid(click.position, ellipsoid);
+  if (!cart) return;
+  const c = Cesium.Cartographic.fromCartesian(cart, ellipsoid);
+  const lon = Cesium.Math.toDegrees(c.longitude);
+  const lat = Cesium.Math.toDegrees(c.latitude);
+
+  if (mode() === 'point') {
+    setPoint(lat, lon);
+  } else if (!cornerA) {
+    clearSelection();
+    cornerA = { lat, lon };
+    addPin(lat, lon, Cesium.Color.YELLOW, 8);
+    setText('First corner set. Click the opposite corner.');
+  } else {
+    setSquare(Math.min(cornerA.lon, lon), Math.min(cornerA.lat, lat),
+              Math.max(cornerA.lon, lon), Math.max(cornerA.lat, lat));
+  }
+}
+
+function addPin(lat, lon, color, size) {
+  entities.push(viewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(lon, lat, 0, ellipsoid),
+    point: { pixelSize: size, color, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 }
+  }));
+}
+
+function clearSelection() {
+  if (viewer) entities.forEach(e => viewer.entities.remove(e));
+  entities = []; selection = null; cornerA = null;
+  overlay.clearLayers();
+  setText(HINT);
+}
+
+/* ---------- Selecting a place (used by clicks, the Go button and Python) ---------- */
+// customText is optional: lets an outside program (Python) supply its own sentence
+function setPoint(lat, lon, customText) {
+  clearSelection();
+  selection = { type: 'point', lat, lon };
+  addPin(lat, lon, Cesium.Color.RED, 12);
+  $('lat').value = lat.toFixed(4);
+  $('lon').value = lon.toFixed(4);
+  setText(customText || ('You are at coordinates ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + ' on ' + B.label + '.'));
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(lon, lat, B.flyHeight, ellipsoid),
+    duration: 2
+  });
+  updateEarth();
+}
+
+function setSquare(w, s, e, n, customText) {
+  clearSelection();
+  selection = { type: 'square', w, s, e, n };
+  entities.push(viewer.entities.add({
+    rectangle: {
+      coordinates: Cesium.Rectangle.fromDegrees(w, s, e, n),
+      material: Cesium.Color.RED.withAlpha(0.3),
+      outline: true, outlineColor: Cesium.Color.RED
+    }
+  }));
+  setText(customText || ('You selected an area on ' + B.label + ' from ' + w.toFixed(2) + ', ' + s.toFixed(2) +
+                         ' to ' + e.toFixed(2) + ', ' + n.toFixed(2) + ' (lon/lat).'));
+  viewer.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(w, s, e, n), duration: 2 });
+  updateEarth();
+}
+
+/* ---------- Tabs and UI ---------- */
+const tabs = $('tabs');
+ENABLED.forEach(k => {
+  const b = document.createElement('button');
+  b.textContent = BODIES[k].label; b.dataset.k = k;
+  b.onclick = () => switchBody(k);
+  tabs.appendChild(b);
+});
+
+function switchBody(k) {
+  key = k; B = BODIES[k];
+  selection = null; cornerA = null; entities = [];
+  overlay.clearLayers();
+  [...tabs.children].forEach(b => b.classList.toggle('active', b.dataset.k === key));
+  $('leftLabel').textContent = B.label + ' (3D model)';
+  buildGlobe();
+  setText(HINT);
+}
+
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', clearSelection));
+$('clear').onclick = clearSelection;
+
+$('zoom').addEventListener('input', () => {
+  $('zoomVal').textContent = $('zoom').value;
+  if (selection && selection.type === 'point') updateEarth();
+});
+
+$('go').onclick = () => {
+  let lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
+  if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 360) {
+    setText('Enter a latitude between -90 and 90 and a longitude between -180 and 360.');
+    return;
+  }
+  if (lon > 180) lon -= 360;   // accept 0..360 east longitudes
+  setPoint(lat, lon);
+};
+
+/* ---------- Input from outside (Python) ---------- */
+// Page address parameters, for example:
+//   index.html?body=mars&lat=18.38&lon=77.58
+//   index.html?body=mars&lat=18.38&lon=77.58&text=Jezero%20Crater&zoom=12
+//   index.html?body=mars&w=75&s=15&e=80&n=20          (a square: west, south, east, north)
+function applyUrlParameters() {
+  const P = new URLSearchParams(location.search);
+  const want = P.get('body');
+  if (want && BODIES[want] && ENABLED.includes(want) && want !== key) switchBody(want);
+  if (P.has('zoom')) {
+    const z = Math.min(17, Math.max(3, parseInt(P.get('zoom'), 10) || 13));
+    $('zoom').value = z; $('zoomVal').textContent = z;
+  }
+  const num = (name) => parseFloat(P.get(name));
+  const text = P.get('text') || undefined;
+  if (P.has('lat') && P.has('lon')) {
+    let lat = num('lat'), lon = num('lon');
+    if (!isNaN(lat) && !isNaN(lon) && Math.abs(lat) <= 90 && lon >= -180 && lon <= 360) {
+      if (lon > 180) lon -= 360;
+      setPoint(lat, lon, text);
+    }
+  } else if (P.has('w') && P.has('s') && P.has('e') && P.has('n')) {
+    const w = num('w'), s = num('s'), e = num('e'), n = num('n');
+    if ([w, s, e, n].every(v => !isNaN(v)) && w < e && s < n) setSquare(w, s, e, n, text);
+  }
+}
+
+// Also usable from other scripts on the page: window.showPlace('mars', 18.38, 77.58, 'optional text')
+window.showPlace = function (body, lat, lon, text) {
+  if (body && BODIES[body] && ENABLED.includes(body) && body !== key) switchBody(body);
+  setPoint(lat, lon > 180 ? lon - 360 : lon, text);
+};
+
+switchBody(key);
+applyUrlParameters();
+</script>
+</body>
+</html>
