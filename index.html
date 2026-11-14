@@ -87,22 +87,21 @@ function buildGlobe() {
   ellipsoid = body === 'mars' ? MARS : Cesium.Ellipsoid.WGS84;
   Cesium.Ellipsoid.default = ellipsoid;   // must be set before the Viewer is created
 
-  const provider = body === 'mars'
-    ? new Cesium.UrlTemplateImageryProvider({
-        url: TREK,
-        tilingScheme: new Cesium.GeographicTilingScheme({ ellipsoid }),
-        minimumLevel: 1,
-        maximumLevel: 7,
-        credit: 'NASA Mars Trek / USGS'
-      })
-    : new Cesium.UrlTemplateImageryProvider({
+  // Mars: one image hosted next to this file (mars.jpg), so there is no CORS problem
+  const baseLayer = body === 'mars'
+    ? Cesium.ImageryLayer.fromProviderAsync(
+        Cesium.SingleTileImageryProvider.fromUrl('mars.jpg', {
+          ellipsoid,
+          credit: 'NASA / JPL / USGS Viking MDIM 2.1'
+        }))
+    : new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
         url: ESRI,
         maximumLevel: 18,
         credit: 'Esri, Maxar, Earthstar Geographics'
-      });
+      }));
 
   viewer = new Cesium.Viewer('globe', {
-    baseLayer: new Cesium.ImageryLayer(provider),
+    baseLayer: baseLayer,
     baseLayerPicker: false, geocoder: false, homeButton: false,
     sceneModePicker: false, navigationHelpButton: false,
     animation: false, timeline: false, fullscreenButton: false,
