@@ -1,314 +1,35 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Planet Viewer</title>
-<script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
-<link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<style>
-  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #000; color: #eee; }
-  #globe, #picture, #detail { position: absolute; inset: 0; }
-  #picture { display: none; }
+import webbrowser
+from urllib.parse import urlencode
 
-  #bar, #detailBar {
-    position: absolute; top: 0; left: 0; right: 0; z-index: 2000;
-    display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
-    padding: .5rem .9rem; box-sizing: border-box;
-    background: rgba(0, 0, 0, .72); font-size: .9rem;
-  }
-  #bar { z-index: 10; }
-  #bar b.title { font-size: 1.05rem; }
-  button { padding: .4rem .9rem; cursor: pointer; border: 1px solid #666; background: #222; color: #eee; border-radius: 4px; }
-  button.active { background: #c1440e; border-color: #c1440e; }
-  input[type=number] { width: 6.2rem; padding: .3rem; }
-  label { white-space: nowrap; }
-  #info, #picInfo { color: #bbb; font-size: .82rem; }
-  body.picture #bar { display: none; }
-</style>
-</head>
-<body>
+# Your live site (GitHub Pages). To test locally instead, run `python -m http.server`
+# in the folder with index.html and use "http://localhost:8000/".
+SITE = "https://tenuesjpg2137.github.io/HackathonNASA/"
 
-<div id="globe"></div>
 
-<div id="bar">
-  <b class="title">Planet Viewer</b>
-  <span id="tabs"></span>
-  <span>
-    <label><input type="radio" name="mode" value="point" checked> Point</label>
-    <label><input type="radio" name="mode" value="square"> Square (2 corners)</label>
-    <button id="clear">Clear</button>
-  </span>
-  <span>
-    <label>Lat <input type="number" id="lat" value="18.38" step="any"></label>
-    <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
-    <button id="go">Go</button>
-  </span>
-  <span id="info">Drag to rotate, scroll to zoom, click to choose a place.</span>
-</div>
+def show_point(body, lat, lon, text=None, earth_zoom=None):
+    """Open the site with a point selected.
+    body: "mars" (or "moon" once enabled); lat/lon in degrees (east-positive longitude)."""
+    params = {"body": body, "lat": lat, "lon": lon}
+    if text:
+        params["text"] = text            # optional: your own sentence for the text line
+    if earth_zoom:
+        params["zoom"] = earth_zoom      # optional: 3..17, how close the Earth picture is
+    url = SITE + "?" + urlencode(params)
+    webbrowser.open(url)
+    return url
 
-<div id="picture">
-  <div id="detail"></div>
-  <div id="detailBar">
-    <button id="back">&larr; Back to globe</button>
-    <span id="picInfo"></span>
-    <label id="zoomWrap">Zoom <input type="range" id="zoom"> <span id="zoomVal"></span></label>
-  </div>
-</div>
 
-<script>
-/* ---------- Which planets are on the site ---------- */
-// To add the Moon later: put 'moon' in this list and upload moon.jpg (4096x2048) next to index.html
-const ENABLED = ['earth', 'mars'];
+def show_square(body, west, south, east, north, text=None):
+    """Open the site with a square (bounding box) selected."""
+    params = {"body": body, "w": west, "s": south, "e": east, "n": north}
+    if text:
+        params["text"] = text
+    url = SITE + "?" + urlencode(params)
+    webbrowser.open(url)
+    return url
 
-const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-const TREK_MARS = 'https://trek.nasa.gov/tiles/Mars/EQ/Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg';
-const TREK_MOON = 'https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/{z}/{y}/{x}.jpg';
 
-const BODIES = {
-  earth: {
-    label: 'Earth', radii: [6378137, 6378137, 6356752.314245],
-    globeTiles: ESRI, atmosphere: true, minCam: 0, flyHeight: 600000,
-    detailTiles: ESRI, geo: false, zoomMin: 3, zoomMax: 17, zoomStart: 13,
-    credit: 'Esri, Maxar, Earthstar Geographics'
-  },
-  mars: {
-    label: 'Mars', radii: [3396190, 3396190, 3376200],
-    texture: 'mars.jpg', atmosphere: false, minCam: 1200000, flyHeight: 1500000,
-    detailTiles: TREK_MARS, geo: true, tileMax: 7, zoomMin: 1, zoomMax: 7, zoomStart: 5,
-    credit: 'NASA / JPL / USGS Viking MDIM 2.1'
-  },
-  moon: {
-    label: 'Moon', radii: [1737400, 1737400, 1737400],
-    texture: 'moon.jpg', atmosphere: false, minCam: 600000, flyHeight: 900000,
-    detailTiles: TREK_MOON, geo: true, tileMax: 7, zoomMin: 1, zoomMax: 7, zoomStart: 5,
-    credit: 'NASA / LRO WAC'
-  }
-};
-
-let key = ENABLED[0], B = BODIES[key];
-let viewer = null, handler = null, ellipsoid = null;
-let detail = null, overlay = null;
-let selection = null, cornerA = null, entities = [], inPicture = false;
-
-const $ = (id) => document.getElementById(id);
-const mode = () => document.querySelector('input[name=mode]:checked').value;
-const info = $('info');
-
-/* ---------- Tabs ---------- */
-const tabs = $('tabs');
-ENABLED.forEach(k => {
-  const b = document.createElement('button');
-  b.textContent = BODIES[k].label; b.dataset.k = k;
-  b.onclick = () => switchBody(k);
-  tabs.appendChild(b);
-});
-function markTab() {
-  [...tabs.children].forEach(b => b.classList.toggle('active', b.dataset.k === key));
-}
-
-/* ---------- Globe ---------- */
-function buildGlobe() {
-  if (handler) { handler.destroy(); handler = null; }
-  if (viewer) { viewer.destroy(); viewer = null; }
-
-  ellipsoid = new Cesium.Ellipsoid(B.radii[0], B.radii[1], B.radii[2]);
-  Cesium.Ellipsoid.default = ellipsoid;   // must be set before the Viewer is created
-
-  const baseLayer = B.texture
-    ? Cesium.ImageryLayer.fromProviderAsync(
-        Cesium.SingleTileImageryProvider.fromUrl(B.texture, { ellipsoid, credit: B.credit }))
-    : new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-        url: B.globeTiles, maximumLevel: 18, credit: B.credit }));
-
-  viewer = new Cesium.Viewer('globe', {
-    baseLayer: baseLayer,
-    baseLayerPicker: false, geocoder: false, homeButton: false,
-    sceneModePicker: false, navigationHelpButton: false,
-    animation: false, timeline: false, fullscreenButton: false,
-    infoBox: false, selectionIndicator: false,
-    skyAtmosphere: B.atmosphere ? undefined : false
-  });
-  viewer.scene.globe.showGroundAtmosphere = B.atmosphere;
-  if (B.minCam) viewer.scene.screenSpaceCameraController.minimumZoomDistance = B.minCam;
-
-  handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-  handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-}
-
-function onGlobeClick(click) {
-  if (inPicture) return;
-  const cart = viewer.camera.pickEllipsoid(click.position, ellipsoid);
-  if (!cart) return;
-  const c = Cesium.Cartographic.fromCartesian(cart, ellipsoid);
-  const lon = Cesium.Math.toDegrees(c.longitude);
-  const lat = Cesium.Math.toDegrees(c.latitude);
-
-  if (mode() === 'point') {
-    setPoint(lat, lon);
-  } else if (!cornerA) {
-    clearSelection();
-    cornerA = { lat, lon };
-    addPin(lat, lon, Cesium.Color.YELLOW, 8);
-    info.textContent = 'First corner set. Click the opposite corner.';
-  } else {
-    setSquare(Math.min(cornerA.lon, lon), Math.min(cornerA.lat, lat),
-              Math.max(cornerA.lon, lon), Math.max(cornerA.lat, lat));
-  }
-}
-
-function addPin(lat, lon, color, size) {
-  entities.push(viewer.entities.add({
-    position: Cesium.Cartesian3.fromDegrees(lon, lat, 0, ellipsoid),
-    point: { pixelSize: size, color, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 }
-  }));
-}
-
-function clearSelection() {
-  if (viewer) entities.forEach(e => viewer.entities.remove(e));
-  entities = []; selection = null; cornerA = null;
-  info.textContent = 'Drag to rotate, scroll to zoom, click to choose a place.';
-}
-
-/* ---------- Selecting a place -> fly in -> picture replaces globe ---------- */
-function setPoint(lat, lon) {
-  clearSelection();
-  selection = { type: 'point', lat, lon };
-  addPin(lat, lon, Cesium.Color.RED, 12);
-  info.textContent = 'Point: ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + ' - flying there...';
-  flyThenShow();
-}
-
-function setSquare(w, s, e, n) {
-  clearSelection();
-  selection = { type: 'square', w, s, e, n };
-  entities.push(viewer.entities.add({
-    rectangle: {
-      coordinates: Cesium.Rectangle.fromDegrees(w, s, e, n),
-      material: Cesium.Color.RED.withAlpha(0.3),
-      outline: true, outlineColor: Cesium.Color.RED
-    }
-  }));
-  info.textContent = 'Square selected - flying there...';
-  flyThenShow();
-}
-
-function flyThenShow() {
-  const options = { duration: 2, complete: showPicture };
-  if (selection.type === 'point') {
-    options.destination = Cesium.Cartesian3.fromDegrees(selection.lon, selection.lat, B.flyHeight, ellipsoid);
-  } else {
-    options.destination = Cesium.Rectangle.fromDegrees(selection.w, selection.s, selection.e, selection.n);
-  }
-  viewer.camera.flyTo(options);
-}
-
-function selectionCenter() {
-  return selection.type === 'point'
-    ? { lat: selection.lat, lon: selection.lon }
-    : { lat: (selection.s + selection.n) / 2, lon: (selection.w + selection.e) / 2 };
-}
-
-/* ---------- Picture view (replaces the globe) ---------- */
-function buildDetail() {
-  if (detail) { detail.remove(); detail = null; }
-  if (B.geo) {
-    detail = L.map('detail', { crs: L.CRS.EPSG4326, minZoom: 1, maxZoom: B.tileMax });
-    L.tileLayer(B.detailTiles, { minZoom: 1, maxNativeZoom: B.tileMax, maxZoom: B.tileMax, attribution: B.credit }).addTo(detail);
-    detail.setView([0, 0], 1);
-  } else {
-    detail = L.map('detail');
-    L.tileLayer(B.detailTiles, { maxZoom: 18, attribution: B.credit }).addTo(detail);
-    detail.setView([20, 0], 2);
-  }
-  overlay = L.layerGroup().addTo(detail);
-}
-
-function showPicture() {
-  if (!selection) return;
-  inPicture = true;
-  viewer.useDefaultRenderLoop = false;          // pause the globe while hidden
-  document.body.classList.add('picture');
-  $('picture').style.display = 'block';
-  detail.invalidateSize();
-  overlay.clearLayers();
-
-  if (selection.type === 'point') {
-    $('zoomWrap').style.display = '';
-    L.circleMarker([selection.lat, selection.lon],
-      { radius: 8, color: '#fff', weight: 2, fillColor: '#f00', fillOpacity: 1 }).addTo(overlay);
-    detail.setView([selection.lat, selection.lon], +$('zoom').value);
-    $('picInfo').textContent = B.label + ' - ' + selection.lat.toFixed(4) + ', ' + selection.lon.toFixed(4);
-  } else {
-    $('zoomWrap').style.display = 'none';
-    const b = [[selection.s, selection.w], [selection.n, selection.e]];
-    L.rectangle(b, { color: '#f00', weight: 2, fillOpacity: 0.1 }).addTo(overlay);
-    detail.fitBounds(b);
-    $('picInfo').textContent = B.label + ' - area W ' + selection.w.toFixed(2) + ', S ' + selection.s.toFixed(2) +
-                               ', E ' + selection.e.toFixed(2) + ', N ' + selection.n.toFixed(2);
-  }
-}
-
-function backToGlobe() {
-  if (!inPicture) return;
-  inPicture = false;
-  $('picture').style.display = 'none';
-  document.body.classList.remove('picture');
-  viewer.useDefaultRenderLoop = true;
-  info.textContent = 'Click the globe to choose another place.';
-  if (selection) {
-    const c = selectionCenter();
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(c.lon, c.lat, B.radii[0] * 3, ellipsoid),
-      duration: 1.5
-    });
-  }
-}
-
-/* ---------- UI wiring ---------- */
-function configureZoomSlider() {
-  const z = $('zoom');
-  z.min = B.zoomMin; z.max = B.zoomMax; z.value = B.zoomStart;
-  $('zoomVal').textContent = z.value;
-}
-
-function switchBody(k) {
-  if (inPicture) { $('picture').style.display = 'none'; document.body.classList.remove('picture'); inPicture = false; }
-  key = k; B = BODIES[k];
-  selection = null; cornerA = null; entities = [];
-  configureZoomSlider();
-  markTab();
-  buildGlobe();
-  buildDetail();
-  info.textContent = 'Showing ' + B.label + '. Click the globe to choose a place.';
-}
-
-document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', clearSelection));
-$('clear').onclick = clearSelection;
-$('back').onclick = backToGlobe;
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') backToGlobe(); });
-
-$('zoom').addEventListener('input', () => {
-  $('zoomVal').textContent = $('zoom').value;
-  if (inPicture && selection && selection.type === 'point') {
-    detail.setView([selection.lat, selection.lon], +$('zoom').value);
-  }
-});
-
-$('go').onclick = () => {
-  if (inPicture) return;
-  let lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
-  if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 360) {
-    info.textContent = 'Enter a latitude between -90 and 90 and a longitude between -180 and 360.';
-    return;
-  }
-  if (lon > 180) lon -= 360;   // accept 0..360 east longitudes
-  setPoint(lat, lon);
-};
-
-switchBody(key);
-</script>
-</body>
-</html>
+if __name__ == "__main__":
+    # Replace this with the values your own code returns:
+    lat, lon = 18.38, 77.58              # Jezero Crater on Mars
+    print(show_point("mars", lat, lon))
