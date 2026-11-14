@@ -91,6 +91,7 @@ function buildGlobe() {
     ? new Cesium.UrlTemplateImageryProvider({
         url: TREK,
         tilingScheme: new Cesium.GeographicTilingScheme({ ellipsoid }),
+        minimumLevel: 1,
         maximumLevel: 7,
         credit: 'NASA Mars Trek / USGS'
       })
