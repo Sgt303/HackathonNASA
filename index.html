@@ -50,11 +50,11 @@
     <button id="clear">Clear</button>
   </span>
   <span>
-    <label>Lat <input type="number" id="lat" value="0" step="any"></label>
-    <label>Lon <input type="number" id="lon" value="0" step="any"></label>
+    <label>Lat <input type="number" id="lat" value="18.38" step="any"></label>
+    <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
     <button id="go">Go</button>
   </span>
-  <label>Earth zoom <input type="range" id="zoom" min="3" max="17" value="10"> <span id="zoomVal">13</span></label>
+  <label>Earth zoom <input type="range" id="zoom" min="3" max="17" value="13"> <span id="zoomVal">13</span></label>
 </div>
 
 <div id="split">
@@ -67,19 +67,33 @@
 <script>
 /* ---------- Settings ---------- */
 // To add the Moon later: put 'moon' in this list and upload moon.jpg (4096x2048) next to index.html
-const ENABLED = ['mars', 'moon'];
+const ENABLED = ['mars'];
 
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+/* ---------- Device check: can this device handle the big textures? ---------- */
+const isTouchDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 900);
+const glTest = document.createElement('canvas').getContext('webgl2') ||
+               document.createElement('canvas').getContext('webgl');
+const maxTexture = glTest ? glTest.getParameter(glTest.MAX_TEXTURE_SIZE) : 2048;
+const memGB = navigator.deviceMemory || 8;     // Chrome only; assumed 8 if the browser doesn't say
+// A 16384-wide texture needs roughly 0.5-0.7 GB of graphics memory, so it also needs 8 GB RAM
+const canUseHiRes = (width) =>
+  !isTouchDevice && maxTexture >= width && (width < 16384 || memGB >= 8);
+console.log('device check:', { isTouchDevice, maxTexture, memGB });
 
 const BODIES = {
   mars: {
     label: 'Mars', radii: [3396190, 3396190, 3376200],
-    texture: 'mars.jpg', minCam: 1200000, flyHeight: 1500000,
+    texture: 'mars.jpg', textureHi: 'mars_hd.jpg', hiWidth: 16384,
+    minCam: 1200000, minCamHi: 500000, flyHeight: 1500000,
     credit: 'NASA / JPL / USGS Viking MDIM 2.1'
   },
   moon: {
     label: 'Moon', radii: [1737400, 1737400, 1737400],
-    texture: 'moon.jpg', minCam: 600000, flyHeight: 900000,
+    texture: 'moon.jpg', textureHi: 'moon_hd.jpg', hiWidth: 8192,
+    minCam: 600000, minCamHi: 300000, flyHeight: 900000,
     credit: 'NASA / LRO WAC'
   }
 };
@@ -120,9 +134,25 @@ function buildGlobe() {
   ellipsoid = new Cesium.Ellipsoid(B.radii[0], B.radii[1], B.radii[2]);
   Cesium.Ellipsoid.default = ellipsoid;   // must be set before the Viewer is created
 
+  // Pick the sharp texture on capable computers, the small one on phones / weaker devices
+  const body = B;
+  const load = (file) => Cesium.SingleTileImageryProvider.fromUrl(file, { ellipsoid, credit: body.credit });
+  const wantHi = !!body.textureHi && canUseHiRes(body.hiWidth);
+  let thisViewer = null;
+  const providerPromise = wantHi
+    ? load(body.textureHi)
+        .then((p) => {
+          console.log('using hi-res texture:', body.textureHi);
+          if (thisViewer && thisViewer === viewer && body.minCamHi) {
+            viewer.scene.screenSpaceCameraController.minimumZoomDistance = body.minCamHi;
+          }
+          return p;
+        })
+        .catch(() => { console.log('hi-res failed, using', body.texture); return load(body.texture); })
+    : load(body.texture);
+
   viewer = new Cesium.Viewer('globe', {
-    baseLayer: Cesium.ImageryLayer.fromProviderAsync(
-      Cesium.SingleTileImageryProvider.fromUrl(B.texture, { ellipsoid, credit: B.credit })),
+    baseLayer: Cesium.ImageryLayer.fromProviderAsync(providerPromise),
     baseLayerPicker: false, geocoder: false, homeButton: false,
     sceneModePicker: false, navigationHelpButton: false,
     animation: false, timeline: false, fullscreenButton: false,
@@ -131,6 +161,7 @@ function buildGlobe() {
   });
   viewer.scene.globe.showGroundAtmosphere = false;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = B.minCam;
+  thisViewer = viewer;
 
   handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
