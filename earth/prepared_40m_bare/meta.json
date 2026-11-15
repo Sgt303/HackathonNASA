@@ -1,0 +1,14 @@
+{
+ "target_m": 40,
+ "earth_px": 30,
+ "use_mask": true,
+ "bare_frac": 0.5,
+ "bare_classes": [
+  60
+ ],
+ "chunks": [
+  "chunk_A.tif",
+  "chunk_B.tif",
+  "chunk_C.tif"
+ ]
+}
