@@ -1,1 +1,9 @@
-
+id,name,latitude,longitude,body
+1, Arcadia Planitia AP-1, 39.8000, -157.3900, mars
+2, Arcadia Planitia AP-9, 40.0210, -156.6680, mars
+3, Phlegra Montes PM-1 35.4930, 163.6190, mars
+4, Erebus Montes EM-1, 39.0900, -170.2100, mars
+5, Valles Marineris, -14.01, -58.59, mars
+6, Peak Near Shackleton (Artemis IV proposal), -88.8110, 123.6901, moon
+7, Apollo 11, 0.6742, 23.4731, moon
+8, Apollo 17, 20.1908, 30.7717, moon
