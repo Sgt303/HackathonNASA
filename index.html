@@ -28,7 +28,7 @@
   #globe, #earth { position: absolute; inset: 0; }
   #left { border-right: 2px solid #333; }
   /* Popup on the globe: same look as the Leaflet popup on the Earth map */
-  .gpop { position: absolute; left: 0; top: 0; z-index: 1000; width: max-content; max-width: 300px;
+  .gpop { position: absolute; left: 0; top: 0; z-index: 1000; width: max-content; max-width: 346px;
     text-align: center; font: 12px/1.5 "Helvetica Neue", Arial, Helvetica, sans-serif; color: #333; }
   .gpop-box { position: relative; background: #fff; border-radius: 12px; padding: 1px; text-align: left;
     box-shadow: 0 3px 14px rgba(0, 0, 0, .4); }
@@ -36,6 +36,9 @@
   .gpop-x { position: absolute; top: 0; right: 0; width: 24px; height: 24px; text-align: center;
     font: 16px/24px Tahoma, Verdana, sans-serif; color: #757575; text-decoration: none; }
   .gpop-x:hover { color: #585858; }
+  .info details { margin-top: 6px; }
+  .info summary { cursor: pointer; color: #0078a8; }
+  .info img { display: block; width: 280px; max-width: 100%; margin-top: 6px; }
   .gpop-tipc { position: absolute; left: 50%; width: 40px; height: 20px; margin-left: -20px; margin-top: -1px;
     overflow: hidden; pointer-events: none; }
   .gpop-tip { width: 17px; height: 17px; padding: 1px; margin: -10px auto 0; background: #fff;
@@ -198,10 +201,41 @@ function clearSelection() {
   setText(HINT);
 }
 
+/* ---------- Popup content (shared by the globe and the Earth map) ---------- */
+// Name + coordinates and, if the site has a profile picture, a collapsible "Details..." with the image
+function infoContent(name, lat, lon, profile, onResize) {
+  onResize = onResize || (() => {});
+  const box = document.createElement('div');
+  box.className = 'info';
+  const head = document.createElement('div');
+  head.innerHTML = '<b>' + esc(name) + '</b><br>' + fmt(lat, lon);
+  box.appendChild(head);
+  if (profile) {
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = 'Details...';
+    const img = document.createElement('img');
+    img.alt = 'Elevation profile: ' + name;
+    img.loading = 'lazy';
+    img.onload = onResize;
+    img.onerror = () => {
+      const msg = document.createElement('div');
+      msg.textContent = 'Image not found: ' + profile;
+      img.replaceWith(msg);
+      onResize();
+    };
+    img.src = encodeURI(profile);
+    det.append(sum, img);
+    det.addEventListener('toggle', onResize);
+    box.appendChild(det);
+  }
+  return box;
+}
+
 /* ---------- Popup on the globe ---------- */
-function showGlobePopup(name, lat, lon) {
+function showGlobePopup(name, lat, lon, profile) {
   popupPos = Cesium.Cartesian3.fromDegrees(lon, lat, 0, ellipsoid);
-  $('gpopc').innerHTML = '<b>' + esc(name) + '</b><br>' + fmt(lat, lon);
+  $('gpopc').replaceChildren(infoContent(name, lat, lon, profile));
 }
 function hideGlobePopup() { popupPos = null; $('gpop').hidden = true; }
 $('gpopx').onclick = (ev) => { ev.preventDefault(); hideGlobePopup(); };
@@ -217,25 +251,31 @@ function updateGlobePopup() {
                       Math.round(sp.y - p.offsetHeight - 29) + 'px)';
 }
 
-/* ---------- Test sites (loaded from sites.json) ---------- */
+/* ---------- Sites (loaded from sites.json) ---------- */
 // Accepted formats:
-//   {id, body: "mars" | "moon", site: {name, lat, lon}, earth: {name, lat, lon}}
-//   [id, siteName, siteLat, siteLon, earthName, earthLat, earthLon, body]   (body optional, default "mars")
+//   {id, body: "mars" | "moon", site: {name, lat, lon}, earth: {name, lat, lon} or null, profile: "profiles/mars/1.png" (optional)}
+//   [id, siteName, siteLat, siteLon, earthName, earthLat, earthLon, body, profile]   (last two optional)
+// "earth" may be missing/null (site shown on the globe only); a missing name falls back to the id.
 // Older files with a "mars" or "moon" key instead of "site" also work.
 function normalizeSite(r) {
-  let id, body, m, e;
+  let id, body, m, e, profile;
   if (Array.isArray(r) && r.length >= 7) {
-    id = r[0]; body = r[7]; m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
-  } else if (r && r.earth && (r.site || r.mars || r.moon)) {
+    id = r[0]; body = r[7]; profile = r[8];
+    m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
+  } else if (r && (r.site || r.mars || r.moon)) {
     id = r.id; body = r.body || (r.moon && !r.mars && !r.site ? 'moon' : 'mars');
-    m = r.site || r.mars || r.moon; e = r.earth;
+    m = r.site || r.mars || r.moon; e = r.earth; profile = r.profile;
   } else return null;
   body = String(body || 'mars').toLowerCase();
   if (!BODIES[body]) return null;
-  const ok = (p) => !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)) && Math.abs(p.lat) <= 90;
-  if (!ok(m) || !ok(e)) return null;
-  const fix = (p) => { let lon = +p.lon; if (lon > 180) lon -= 360; return { name: String(p.name == null ? '' : p.name), lat: +p.lat, lon }; };
-  return { id, body, site: fix(m), earth: fix(e) };
+  const has = (p) => p && p.lat != null && p.lon != null &&
+    !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)) && Math.abs(p.lat) <= 90;
+  if (!has(m)) return null;
+  const fix = (p) => {
+    let lon = +p.lon; if (lon > 180) lon -= 360;
+    return { name: p.name ? String(p.name) : String(id), lat: +p.lat, lon };
+  };
+  return { id, body, site: fix(m), earth: has(e) ? fix(e) : null, profile: profile ? String(profile) : null };
 }
 
 async function loadSites() {
@@ -259,12 +299,12 @@ function refreshSites() {
   SITES.forEach((s, i) => {
     if (s.body !== key) return;
     const o = document.createElement('option');
-    o.value = i; o.textContent = s.id + '. ' + s.site.name + ' \u2194 ' + s.earth.name;
+    o.value = i; o.textContent = s.id + '. ' + s.site.name + (s.earth ? ' \u2194 ' + s.earth.name : '');
     sel.appendChild(o);
   });
   drawSites();
-  const here = SITES.filter(s => s.body === key);
-  if (here.length) earth.fitBounds(L.latLngBounds(here.map(s => [s.earth.lat, s.earth.lon])), { padding: [30, 30], maxZoom: 6 });
+  const onEarth = SITES.filter(s => s.body === key && s.earth);
+  if (onEarth.length) earth.fitBounds(L.latLngBounds(onEarth.map(s => [s.earth.lat, s.earth.lon])), { padding: [30, 30], maxZoom: 6 });
 }
 
 function drawSites() {
@@ -280,6 +320,7 @@ function drawSites() {
     });
     pin.siteIdx = i;
     siteEntities.push(pin);
+    if (!s.earth) return;                      // no Earth counterpart: globe only
     L.circleMarker([s.earth.lat, s.earth.lon],
       { radius: 8, color: '#fff', weight: 2, fillColor: '#f00', fillOpacity: 1 })
       .bindTooltip(esc(s.earth.name))
@@ -302,22 +343,25 @@ function selectSite(i) {
   $('site').value = i;
   const m = s.site, e = s.earth;
 
-  // Globe side: highlighted pin + popup with name and coordinates
+  // Globe side: highlighted pin + popup with name, coordinates and (if any) the profile picture
   addPin(m.lat, m.lon, Cesium.Color.YELLOW, 14);
-  showGlobePopup(m.name, m.lat, m.lon);
+  showGlobePopup(m.name, m.lat, m.lon, s.profile);
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, B.flyHeight, ellipsoid), duration: 2
   });
 
-  // Earth side: highlighted marker + popup with name and coordinates
-  L.circleMarker([e.lat, e.lon], { radius: 10, color: '#fff', weight: 2, fillColor: '#ff0', fillOpacity: 1 }).addTo(overlay);
-  earth.setView([e.lat, e.lon], EARTH_ZOOM);
-  L.popup({ autoClose: false, closeOnClick: false, offset: [0, -6] })
-    .setLatLng([e.lat, e.lon])
-    .setContent('<b>' + esc(e.name) + '</b><br>' + fmt(e.lat, e.lon))
-    .openOn(earth);
-
-  setText('Site ' + s.id + ': ' + B.label + ' - ' + m.name + ' (' + fmt(m.lat, m.lon) + ')  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')');
+  let text = 'Site ' + s.id + ': ' + B.label + ' - ' + m.name + ' (' + fmt(m.lat, m.lon) + ')';
+  if (e) {
+    // Earth side: highlighted marker + popup
+    L.circleMarker([e.lat, e.lon], { radius: 10, color: '#fff', weight: 2, fillColor: '#ff0', fillOpacity: 1 }).addTo(overlay);
+    earth.setView([e.lat, e.lon], EARTH_ZOOM);
+    const pop = L.popup({ autoClose: false, closeOnClick: false, offset: [0, -6] }).setLatLng([e.lat, e.lon]);
+    pop.setContent(infoContent(e.name, e.lat, e.lon, s.profile, () => pop.update())).openOn(earth);
+    text += '  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')';
+  } else {
+    text += '  (no Earth counterpart)';
+  }
+  setText(text);
 }
 
 /* ---------- Selecting any place (globe click, Go button, URL): shown on the globe only ---------- */
