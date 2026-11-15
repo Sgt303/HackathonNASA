@@ -417,7 +417,7 @@ function showSquares(sq, earthSq, customText) {
 window.showSquares = showSquares;
 
 /* ---------- Python running inside the page (Pyodide) ---------- */
-// The page sends one value to compute(value) in my_code.py (same folder as index.html) and gets back
+// The page sends one value to compute(value) in planet2vec (4).py (same folder as index.html) and gets back
 //   {"lat": .., "lon": .., "side_km": ..}                     the square on Mars / Moon
 //   optionally  "earth": {"lat": .., "lon": .., "side_km": ..}   the square on Earth
 //   optionally  "text": "..."                                  own sentence for the text line
@@ -432,10 +432,10 @@ function getPython() {
         document.head.appendChild(sc);
       });
       const py = await loadPyodide();
-      const resp = await fetch('my_code.py', { cache: 'no-cache' });
-      if (!resp.ok) throw new Error('my_code.py not found next to index.html');
+      const resp = await fetch('planet2vec (4).py', { cache: 'no-cache' });
+      if (!resp.ok) throw new Error('planet2vec (4).py not found next to index.html');
       const code = await resp.text();
-      await py.loadPackagesFromImports(code);   // e.g. numpy, pandas if my_code.py imports them
+      await py.loadPackagesFromImports(code);   // e.g. numpy, pandas if planet2vec (4).py imports them
       await py.runPythonAsync(code);
       return py;
     })();
