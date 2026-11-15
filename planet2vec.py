@@ -31,7 +31,7 @@ Q_SHAPE = [10, 20, 30, 40, 50, 60, 70, 80, 90]   # kształt rozkładu wysokości
 Q_SLOPE = [5, 25, 50, 75, 95]
 N_BINS = 12                                       # biny orientacji (12 x 15°)
 MAX_NAN = 0.10                                    # odrzucaj okna z >10% NaN (po zamaskowaniu = min. 90% terenu 'bare')
-BLOCK_W = {"elev_scale": 2.0, "elev_shape": 2.5, "slope": 1.0, "orient": 2.0}
+BLOCK_W = {"elev_scale": 2.0, "elev_shape": 1.5, "slope": 1.0, "orient": 1.0}
 BODY_RADIUS_M = {"earth": 6_371_000, "mars": 3_389_500, "moon": 1_737_400}  # z pamięci, zweryfikuj
 
 try:
@@ -950,6 +950,161 @@ def export_sites(path=SITES_JSON, bodies=None, k=5, samples=3, force=False):
     return data
 
 
+# ======================= EKSPORT CECH DLA recalc.js =======================
+# Dodane na potrzeby przeliczania wag w przeglądarce. NIE zmienia BLOCK_W ani algorytmu wyszukiwania.
+#
+# Embedding okna to hstack_b( w_b * Z_b / sqrt(dim_b) ), gdzie Z_b = (cechy_b - mu_b) / sd_b.
+# mu/sd nie zależą od wag, więc wystarczy zapisać Z (standaryzowane cechy BEZ wag), a odległość
+# dla dowolnych wag to:  d^2 = sum_b w_b^2 * ||Zq_b - Zw_b||^2 / dim_b  (identycznie jak search()).
+FEATURES_DIR = ROOT / "features"
+FEATURES_VERSION = 1
+
+def _zfeat(feats, mu, sd):
+    """Standaryzowane cechy okien, bez wag i bez 1/sqrt(dim): (N, D) float32 (little-endian)."""
+    return np.hstack([(np.array([f[b] for f in feats]) - mu[b]) / sd[b] for b in BLOCK_W]).astype("<f4")
+
+def _block_ranges(feat0):
+    out, i = [], 0
+    for b in BLOCK_W:
+        d = len(feat0[b])
+        out.append((b, i, i + d))
+        i += d
+    return out
+
+def _geo_many(r, pos, n):
+    """Środki okien (lat, lon) dla wielu okien rastra naraz - to samo co _window(), ale wektorowo."""
+    if r.transform is None or r.crs is None:
+        return np.full(len(pos), np.nan), np.full(len(pos), np.nan)
+    tf = r.transform
+    cx, cy = pos[:, 1] + n / 2, pos[:, 0] + n / 2
+    x = tf.a * cx + tf.b * cy + tf.c
+    y = tf.d * cx + tf.e * cy + tf.f
+    lon, lat = _transformer(r.crs).transform(x, y)
+    return np.asarray(lat, dtype="float64"), _lon180(np.asarray(lon, dtype="float64"))
+
+def _weight_presets():
+    """Zestawy wag, dla których zbieramy okna Ziemi do puli obrazków (domyślne, każdy blok x0 / x3,
+    każdy blok osobno). Dzięki temu po zmianie wag w przeglądarce większość nowych trafień ma już PNG."""
+    base = dict(BLOCK_W)
+    ps = [base]
+    for b in base:
+        ps.append({**base, b: 0.0})
+        ps.append({**base, b: base[b] * 3})
+        ps.append({c: (1.0 if c == b else 0.0) for c in base})
+    return ps
+
+def _clean_chunk(name):
+    return name.replace("Ziemia ", "").replace(" (bare)", "")
+
+def export_features(out_dir=FEATURES_DIR, bodies=None, k=5, samples=3, pool_k=6):
+    """Zapisuje do out_dir wszystko, czego potrzebuje recalc.js (przeliczanie wag + obrazki PNG):
+      {body}.json        meta: bloki, domyślne wagi, nazwy chunków, kwadraty Marsa/Księżyca (z cechami Z)
+      {body}_feat.f32    cechy Z wszystkich okien bazy Ziemi (N x D, float32)
+      {body}_geo.f64     środek okna: lat, lon (N x 2, float64)
+      {body}_idx.i32     (nr chunka, wiersz, kolumna) okna (N x 3, int32)
+      {body}_win.json/.f32  surowe okna (wysokość, gx, gy) do rysowania PNG: kwadraty celu + pula okien Ziemi
+    Kwadraty celu są liczone tak samo jak w export_sites (te same k, samples, seed), więc odpowiadają wpisom sites.json.
+    pool_k: ile najlepszych okien na zestaw wag trafia do puli obrazków Ziemi."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    presets = _weight_presets()
+
+    for body in (bodies or sorted(BODY_PIXEL_M)):
+        cache = _cache_dir(body)
+        if not cache.is_dir():
+            print(f"POMINIĘTO {body}: brak bazy Ziemi {cache}")
+            continue
+        queries, qwin, db = [], [], None
+        for site in list_sites(body):
+            try:
+                db, q, order, dist, earth_ts, tgt_t, qs, results = find_analogs_multi(
+                    str(cache), str(_target_dir(body) / f"{site}.tif"),
+                    pixel_m=BODY_PIXEL_M[body], name=site, k=k, samples=samples, show=False)
+            except Exception as e:
+                print(f"POMINIĘTO {body}/{site}: {type(e).__name__}: {e}")
+                continue
+            n = db.n
+            gx, gy, _ = _grad(tgt_t.arr, tgt_t.pixel_m)
+            for i, q_i in enumerate(qs):
+                row, col = (int(v) for v in q_i.pos[0])
+                w = _window(tgt_t, row, col, n)
+                if w.lat is None:
+                    print(f"UWAGA: {site} kwadrat {i} bez georeferencji - pominięty")
+                    continue
+                sx = np.s_[row:row + n, col:col + n]
+                queries.append({"source": site, "square": i, "original": i == 0,
+                                "lat": float(w.lat), "lon": float(_lon180(w.lon)), "side_m": float(w.side_m),
+                                "z": [float(v) for v in _zfeat(q_i.feats, db.mu, db.sd)[0]]})
+                qwin.append({"kind": "query", "source": site, "square": i, "lat": float(w.lat),
+                             "lon": float(_lon180(w.lon)), "arrays": (tgt_t.arr[sx], gx[sx], gy[sx])})
+        if db is None or not queries:
+            print(f"POMINIĘTO {body}: brak zapytań")
+            continue
+
+        # --- baza Ziemi ---
+        N, n = len(db.feats), db.n
+        Z = _zfeat(db.feats, db.mu, db.sd)
+        ranges = _block_ranges(db.feats[0])
+        D = Z.shape[1]
+        geo = np.full((N, 2), np.nan)
+        src = np.asarray(db.src)
+        for j, r in enumerate(db.rasters):
+            m = src == j
+            if m.any():
+                geo[m, 0], geo[m, 1] = _geo_many(r, np.asarray(db.pos)[m], n)
+        idx = np.column_stack([src, np.asarray(db.pos)]).astype("<i4")
+
+        # --- pula okien Ziemi do obrazków ---
+        pool = set()
+        for qd in queries:
+            zq = np.asarray(qd["z"], dtype="float32")
+            Db = np.stack([((Z[:, a:b] - zq[a:b]) ** 2).sum(1) / (b - a) for _, a, b in ranges])
+            for p in presets:
+                d2 = sum(p[name] ** 2 * Db[t] for t, (name, _, _) in enumerate(ranges))
+                d2 = np.where(np.isfinite(d2), d2, np.inf)
+                kk = min(max(pool_k, k), N)
+                pool.update(int(j) for j in np.argpartition(d2, kk - 1)[:kk])
+        pool = sorted(pool, key=lambda j: (int(src[j]), int(db.pos[j][0]), int(db.pos[j][1])))
+
+        ewin, last_r, gcache = [], None, None
+        for j in pool:
+            r = db.rasters[int(src[j])]
+            if last_r is not r:
+                gcache, last_r = _grad(r.arr, r.pixel_m), r
+            a, b = (int(v) for v in db.pos[j])
+            sx = np.s_[a:a + n, b:b + n]
+            ewin.append({"kind": "earth", "chunk": _clean_chunk(r.name), "row": a, "col": b,
+                         "lat": float(geo[j, 0]), "lon": float(geo[j, 1]),
+                         "arrays": (r.arr[sx], gcache[0][sx], gcache[1][sx])})
+
+        # --- zapis ---
+        wins = qwin + ewin
+        W = np.stack([np.stack(w["arrays"]) for w in wins]).astype("<f4")      # (M, 3, n, n)
+        W.tofile(out_dir / f"{body}_win.f32")
+        _write_json(out_dir / f"{body}_win.json",
+                    [{kk: vv for kk, vv in w.items() if kk != "arrays"} for w in wins])
+        Z.tofile(out_dir / f"{body}_feat.f32")
+        geo.astype("<f8").tofile(out_dir / f"{body}_geo.f64")
+        idx.tofile(out_dir / f"{body}_idx.i32")
+        meta = {
+            "version": FEATURES_VERSION, "body": body, "n": int(n), "pixel_m": float(db.pixel_m),
+            "k": int(k), "count": int(N), "dim": int(D),
+            "blocks": [{"name": name, "start": a, "end": b, "dim": b - a, "default_weight": BLOCK_W[name]}
+                       for name, a, b in ranges],
+            "rasters": [_clean_chunk(r.name) for r in db.rasters],
+            "files": {"feat": f"{body}_feat.f32", "geo": f"{body}_geo.f64", "idx": f"{body}_idx.i32",
+                      "windows": f"{body}_win.json", "windows_data": f"{body}_win.f32"},
+            "queries": queries,
+        }
+        _write_json(out_dir / f"{body}.json", meta)
+        print(f"{body}: {N} okien bazy, {len(queries)} kwadratów, {len(wins)} okien do PNG "
+              f"({W.nbytes / 1e6:.0f} MB) -> {out_dir}")
+    return out_dir
+
+
 if __name__ == "__main__":
     import sys
-    export_sites(force="--force" in sys.argv)      # python planet2vec.py [--force]
+    if "--features" in sys.argv:                     # python planet2vec.py --features   (dane dla recalc.js)
+        export_features()
+    else:
+        export_sites(force="--force" in sys.argv)      # python planet2vec.py [--force]
