@@ -66,10 +66,6 @@
     <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
     <button id="go">Go</button>
   </span>
-  <span>
-    <input type="text" id="pyIn" placeholder="value for Python" style="width:9rem;padding:.3rem">
-    <button id="pyRun">Run Python</button>
-  </span>
 </div>
 
 <div id="split">
@@ -264,7 +260,7 @@ function updateGlobePopup() {
 function normalizeSite(r) {
   let id, body, m, e, profile;
   if (Array.isArray(r) && r.length >= 7) {
-    id = r[0]; body = r[7]; profile = typeof r[8] === 'string' ? r[8] : null;
+    id = r[0]; body = r[7]; profile = r[8];
     m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
   } else if (r && (r.site || r.mars || r.moon)) {
     id = r.id; body = r.body || (r.moon && !r.mars && !r.site ? 'moon' : 'mars');
@@ -345,7 +341,6 @@ function selectSite(i) {
   if (key !== s.body) switchBody(s.body);
   clearSelection();
   $('site').value = i;
-  $('pyIn').value = s.id;                      // handy default: send the site id to Python
   const m = s.site, e = s.earth;
 
   // Globe side: highlighted pin + popup with name, coordinates and (if any) the profile picture
@@ -381,90 +376,6 @@ function setPoint(lat, lon, customText) {
     duration: 2
   });
 }
-
-/* ---------- Square from a centre and a side length (km) ---------- */
-const R_KM = { earth: 6371.0, mars: 3389.5, moon: 1737.4 };   // mean radii in km
-
-function boundsFromCenter(R, lat, lon, sideKm) {
-  const half = (sideKm / 2) / R * 180 / Math.PI;                       // half side in degrees of latitude
-  const halfLon = half / Math.max(0.05, Math.cos(lat * Math.PI / 180));
-  return { w: Math.max(-180, lon - halfLon), e: Math.min(180, lon + halfLon),
-           s: Math.max(-90, lat - half), n: Math.min(90, lat + half) };
-}
-
-// sq = {lat, lon, side_km} on the current body; earthSq (optional) = same on Earth
-function showSquares(sq, earthSq, customText) {
-  clearSelection();
-  const fixLon = (x) => (x > 180 ? x - 360 : x);
-  const b = boundsFromCenter(R_KM[key], sq.lat, fixLon(sq.lon), sq.side_km);
-  entities.push(viewer.entities.add({
-    rectangle: {
-      coordinates: Cesium.Rectangle.fromDegrees(b.w, b.s, b.e, b.n),
-      material: Cesium.Color.RED.withAlpha(0.3), outline: true, outlineColor: Cesium.Color.RED
-    }
-  }));
-  viewer.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(b.w, b.s, b.e, b.n), duration: 2 });
-  let text = 'Square on ' + B.label + ': centre ' + fmt(sq.lat, fixLon(sq.lon)) + ', side ' + sq.side_km + ' km.';
-  if (earthSq) {
-    const eb = boundsFromCenter(R_KM.earth, earthSq.lat, fixLon(earthSq.lon), earthSq.side_km);
-    const bounds = [[eb.s, eb.w], [eb.n, eb.e]];
-    L.rectangle(bounds, { color: '#f00', weight: 2, fillOpacity: 0.1 }).addTo(overlay);
-    earth.fitBounds(bounds);
-    text += '  \u2194  Earth: centre ' + fmt(earthSq.lat, fixLon(earthSq.lon)) + ', side ' + earthSq.side_km + ' km.';
-  }
-  setText(customText || text);
-}
-window.showSquares = showSquares;
-
-/* ---------- Python running inside the page (Pyodide) ---------- */
-// The page sends one value to compute(value) in planet2vec (4).py (same folder as index.html) and gets back
-//   {"lat": .., "lon": .., "side_km": ..}                     the square on Mars / Moon
-//   optionally  "earth": {"lat": .., "lon": .., "side_km": ..}   the square on Earth
-//   optionally  "text": "..."                                  own sentence for the text line
-let pyodidePromise = null;
-function getPython() {
-  if (!pyodidePromise) {
-    pyodidePromise = (async () => {
-      await new Promise((ok, fail) => {
-        const sc = document.createElement('script');
-        sc.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js';
-        sc.onload = ok; sc.onerror = () => fail(new Error('could not load Pyodide'));
-        document.head.appendChild(sc);
-      });
-      const py = await loadPyodide();
-      const resp = await fetch('planet2vec (4).py', { cache: 'no-cache' });
-      if (!resp.ok) throw new Error('planet2vec (4).py not found next to index.html');
-      const code = await resp.text();
-      await py.loadPackagesFromImports(code);   // e.g. numpy, pandas if planet2vec (4).py imports them
-      await py.runPythonAsync(code);
-      return py;
-    })();
-  }
-  return pyodidePromise;
-}
-
-async function runPython(value) {
-  setText('Running Python (the first run downloads about 10 MB)...');
-  try {
-    const py = await getPython();
-    py.globals.set('page_value', value);
-    const out = JSON.parse(await py.runPythonAsync('import json\njson.dumps(compute(page_value))'));
-    const clean = (p, what) => {
-      const q = { lat: parseFloat(p && p.lat), lon: parseFloat(p && p.lon), side_km: parseFloat(p && p.side_km) };
-      if ([q.lat, q.lon, q.side_km].some(isNaN) || Math.abs(q.lat) > 90 || q.side_km <= 0) {
-        throw new Error('compute() must return lat, lon and side_km' + what);
-      }
-      return q;
-    };
-    if (out.body && BODIES[out.body] && ENABLED.includes(out.body) && out.body !== key) switchBody(out.body);
-    showSquares(clean(out, ''), out.earth ? clean(out.earth, ' for "earth"') : null, out.text);
-  } catch (err) {
-    pyodidePromise = null;
-    setText('Python error: ' + err.message);
-  }
-}
-$('pyRun').onclick = () => runPython($('pyIn').value);
-$('pyIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPython($('pyIn').value); });
 
 /* ---------- Tabs and UI ---------- */
 const tabs = $('tabs');
