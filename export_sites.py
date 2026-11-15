@@ -2,6 +2,7 @@
 Dostosuj import i funkcję fetch_profile do swojej biblioteki."""
 import json
 import os
+from planet2vec import 
 
 DEFAULT_BODY = "mars"      # używane, gdy krotka nie ma 8. elementu
 PROFILE_DIR = "profiles"   # profiles/mars/1.png, profiles/moon/2.png ... (id mogą się powtarzać między ciałami)
