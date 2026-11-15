@@ -27,10 +27,19 @@
   .pane { flex: 1; position: relative; min-width: 0; }
   #globe, #earth { position: absolute; inset: 0; }
   #left { border-right: 2px solid #333; }
-  .label {
-    position: absolute; top: 8px; left: 8px; z-index: 1000; pointer-events: none;
-    background: rgba(0, 0, 0, .65); padding: .2rem .6rem; border-radius: 4px; font-size: .85rem;
-  }
+  /* Popup on the globe: same look as the Leaflet popup on the Earth map */
+  .gpop { position: absolute; left: 0; top: 0; z-index: 1000; width: max-content; max-width: 300px;
+    text-align: center; font: 12px/1.5 "Helvetica Neue", Arial, Helvetica, sans-serif; color: #333; }
+  .gpop-box { position: relative; background: #fff; border-radius: 12px; padding: 1px; text-align: left;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, .4); }
+  .gpop-content { margin: 13px 24px 13px 20px; line-height: 1.3; font-size: 13px; }
+  .gpop-x { position: absolute; top: 0; right: 0; width: 24px; height: 24px; text-align: center;
+    font: 16px/24px Tahoma, Verdana, sans-serif; color: #757575; text-decoration: none; }
+  .gpop-x:hover { color: #585858; }
+  .gpop-tipc { position: absolute; left: 50%; width: 40px; height: 20px; margin-left: -20px; margin-top: -1px;
+    overflow: hidden; pointer-events: none; }
+  .gpop-tip { width: 17px; height: 17px; padding: 1px; margin: -10px auto 0; background: #fff;
+    transform: rotate(45deg); box-shadow: 0 3px 14px rgba(0, 0, 0, .4); }
 
   #text { flex: none; padding: .7rem 1rem; background: #111; border-top: 1px solid #333; font-size: 1rem; min-height: 1.4rem; }
 
@@ -60,8 +69,13 @@
 </div>
 
 <div id="split">
-  <div class="pane" id="left"><div id="globe"></div><div class="label" id="leftLabel"></div></div>
-  <div class="pane" id="right"><div id="earth"></div><div class="label">Earth - test sites</div></div>
+  <div class="pane" id="left"><div id="globe"></div>
+    <div class="gpop" id="gpop" hidden>
+      <div class="gpop-box"><a class="gpop-x" id="gpopx" href="#" role="button" aria-label="Close">&#215;</a><div class="gpop-content" id="gpopc"></div></div>
+      <div class="gpop-tipc"><div class="gpop-tip"></div></div>
+    </div>
+  </div>
+  <div class="pane" id="right"><div id="earth"></div></div>
 </div>
 
 <div id="text">Drag the globe to rotate, scroll to zoom, click a site or any other place.</div>
@@ -69,7 +83,6 @@
 <script>
 /* ---------- Settings ---------- */
 const ENABLED = ['mars', 'moon'];
-const SITE_BODY = 'mars';                 // the sites from sites.json belong to this body
 const SITES_URL = 'sites.json';           // made by export_sites.py (can be overridden with ?data=other.json)
 
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
@@ -102,7 +115,7 @@ const BODIES = {
 let key = ENABLED[0], B = BODIES[key];
 let viewer = null, handler = null, ellipsoid = null;
 let selection = null, cornerA = null, entities = [];
-let SITES = [], siteEntities = [];
+let SITES = [], siteEntities = [], popupPos = null;
 
 const $ = (id) => document.getElementById(id);
 const mode = () => document.querySelector('input[name=mode]:checked').value;
@@ -165,6 +178,7 @@ function buildGlobe() {
   viewer.scene.globe.showGroundAtmosphere = false;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = B.minCam;
   thisViewer = viewer;
+  viewer.scene.preRender.addEventListener(updateGlobePopup);
 
   handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction(onGlobeClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
@@ -209,25 +223,49 @@ function clearSelection() {
   entities = []; selection = null; cornerA = null;
   overlay.clearLayers();
   earth.closePopup();
+  hideGlobePopup();
   $('site').value = '';
   setText(HINT);
 }
 
+/* ---------- Popup on the globe ---------- */
+function showGlobePopup(name, lat, lon) {
+  popupPos = Cesium.Cartesian3.fromDegrees(lon, lat, 0, ellipsoid);
+  $('gpopc').innerHTML = '<b>' + esc(name) + '</b><br>' + fmt(lat, lon);
+}
+function hideGlobePopup() { popupPos = null; $('gpop').hidden = true; }
+$('gpopx').onclick = (ev) => { ev.preventDefault(); hideGlobePopup(); };
+
+function updateGlobePopup() {
+  const p = $('gpop');
+  if (!popupPos || !viewer) { p.hidden = true; return; }
+  const facing = new Cesium.EllipsoidalOccluder(ellipsoid, viewer.camera.positionWC).isPointVisible(popupPos);
+  const sp = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, popupPos);
+  if (!facing || !sp) { p.hidden = true; return; }
+  p.hidden = false;
+  p.style.transform = 'translate(' + Math.round(sp.x - p.offsetWidth / 2) + 'px,' +
+                      Math.round(sp.y - p.offsetHeight - 29) + 'px)';
+}
+
 /* ---------- Test sites (loaded from sites.json) ---------- */
-// Accepts both formats:
-//   [id, marsName, marsLat, marsLon, earthName, earthLat, earthLon]
-//   {id, mars: {name, lat, lon}, earth: {name, lat, lon}}
+// Accepted formats:
+//   {id, body: "mars" | "moon", site: {name, lat, lon}, earth: {name, lat, lon}}
+//   [id, siteName, siteLat, siteLon, earthName, earthLat, earthLon, body]   (body optional, default "mars")
+// Older files with a "mars" or "moon" key instead of "site" also work.
 function normalizeSite(r) {
-  let id, m, e;
+  let id, body, m, e;
   if (Array.isArray(r) && r.length >= 7) {
-    id = r[0]; m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
-  } else if (r && r.mars && r.earth) {
-    id = r.id; m = r.mars; e = r.earth;
+    id = r[0]; body = r[7]; m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
+  } else if (r && r.earth && (r.site || r.mars || r.moon)) {
+    id = r.id; body = r.body || (r.moon && !r.mars && !r.site ? 'moon' : 'mars');
+    m = r.site || r.mars || r.moon; e = r.earth;
   } else return null;
+  body = String(body || 'mars').toLowerCase();
+  if (!BODIES[body]) return null;
   const ok = (p) => !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)) && Math.abs(p.lat) <= 90;
   if (!ok(m) || !ok(e)) return null;
   const fix = (p) => { let lon = +p.lon; if (lon > 180) lon -= 360; return { name: String(p.name == null ? '' : p.name), lat: +p.lat, lon }; };
-  return { id, mars: fix(m), earth: fix(e) };
+  return { id, body, site: fix(m), earth: fix(e) };
 }
 
 async function loadSites() {
@@ -241,24 +279,33 @@ async function loadSites() {
     setText('Could not load ' + url + ' (' + err.message + '). Run export_sites.py and open this page through a local server: python -m http.server');
     return;
   }
+  refreshSites();
+}
+
+// Shows only the sites of the current body (list, globe markers, Earth markers)
+function refreshSites() {
   const sel = $('site');
+  sel.length = 1;                              // keep the placeholder option
   SITES.forEach((s, i) => {
+    if (s.body !== key) return;
     const o = document.createElement('option');
-    o.value = i; o.textContent = s.id + '. ' + s.mars.name + ' \u2194 ' + s.earth.name;
+    o.value = i; o.textContent = s.id + '. ' + s.site.name + ' \u2194 ' + s.earth.name;
     sel.appendChild(o);
   });
   drawSites();
-  if (SITES.length) earth.fitBounds(L.latLngBounds(SITES.map(s => [s.earth.lat, s.earth.lon])), { padding: [30, 30], maxZoom: 6 });
+  const here = SITES.filter(s => s.body === key);
+  if (here.length) earth.fitBounds(L.latLngBounds(here.map(s => [s.earth.lat, s.earth.lon])), { padding: [30, 30], maxZoom: 6 });
 }
 
 function drawSites() {
   siteLayer.clearLayers();
   if (viewer) siteEntities.forEach(e => viewer.entities.remove(e));
   siteEntities = [];
-  if (key !== SITE_BODY || !viewer) return;
+  if (!viewer) return;
   SITES.forEach((s, i) => {
+    if (s.body !== key) return;
     const pin = viewer.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(s.mars.lon, s.mars.lat, 0, ellipsoid),
+      position: Cesium.Cartesian3.fromDegrees(s.site.lon, s.site.lat, 0, ellipsoid),
       point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 }
     });
     pin.siteIdx = i;
@@ -271,26 +318,24 @@ function drawSites() {
   });
 }
 
+function findSite(id) {
+  const same = (s) => String(s.id) === String(id);
+  const i = SITES.findIndex(s => s.body === key && same(s));
+  return i >= 0 ? i : SITES.findIndex(same);
+}
+
 function selectSite(i) {
   const s = SITES[i];
   if (!s) return;
-  if (key !== SITE_BODY) switchBody(SITE_BODY);
+  if (key !== s.body) switchBody(s.body);
   clearSelection();
   selection = { type: 'site', i };
   $('site').value = i;
-  const m = s.mars, e = s.earth;
+  const m = s.site, e = s.earth;
 
-  // Mars side: highlighted pin + box with name and coordinates
+  // Globe side: highlighted pin + popup with name and coordinates
   addPin(m.lat, m.lon, Cesium.Color.YELLOW, 14);
-  entities.push(viewer.entities.add({
-    position: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, 0, ellipsoid),
-    label: {
-      text: m.name + '\n' + fmt(m.lat, m.lon), font: '14px system-ui, sans-serif',
-      showBackground: true, backgroundColor: Cesium.Color.BLACK.withAlpha(0.8), fillColor: Cesium.Color.WHITE,
-      horizontalOrigin: Cesium.HorizontalOrigin.LEFT, verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-      pixelOffset: new Cesium.Cartesian2(14, -14)
-    }
-  }));
+  showGlobePopup(m.name, m.lat, m.lon);
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, B.flyHeight, ellipsoid), duration: 2
   });
@@ -303,7 +348,7 @@ function selectSite(i) {
     .setContent('<b>' + esc(e.name) + '</b><br>' + fmt(e.lat, e.lon))
     .openOn(earth);
 
-  setText('Site ' + s.id + ': Mars - ' + m.name + ' (' + fmt(m.lat, m.lon) + ')  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')');
+  setText('Site ' + s.id + ': ' + B.label + ' - ' + m.name + ' (' + fmt(m.lat, m.lon) + ')  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')');
 }
 
 /* ---------- Selecting any place (clicks, the Go button, URL) ---------- */
@@ -353,9 +398,9 @@ function switchBody(k) {
   earth.closePopup();
   $('site').value = '';
   [...tabs.children].forEach(b => b.classList.toggle('active', b.dataset.k === key));
-  $('leftLabel').textContent = B.label + ' (3D model)';
   buildGlobe();
-  drawSites();
+  hideGlobePopup();
+  refreshSites();
   setText(HINT);
 }
 
@@ -383,7 +428,7 @@ $('go').onclick = () => {
 };
 
 /* ---------- Input from outside ---------- */
-//   index.html?site=1                                   (select a site by its id)
+//   index.html?site=1                                   (select a site by its id; add &body=moon for the Moon)
 //   index.html?data=other.json                          (use another data file)
 //   index.html?body=mars&lat=18.38&lon=77.58&text=Jezero%20Crater&zoom=12
 //   index.html?body=mars&w=75&s=15&e=80&n=20            (a square: west, south, east, north)
@@ -398,7 +443,7 @@ function applyUrlParameters() {
   const num = (name) => parseFloat(P.get(name));
   const text = P.get('text') || undefined;
   if (P.has('site')) {
-    const i = SITES.findIndex(s => String(s.id) === P.get('site'));
+    const i = findSite(P.get('site'));
     if (i >= 0) selectSite(i);
   } else if (P.has('lat') && P.has('lon')) {
     let lat = num('lat'), lon = num('lon');
@@ -416,7 +461,7 @@ window.showPlace = function (body, lat, lon, text) {
   if (body && BODIES[body] && ENABLED.includes(body) && body !== key) switchBody(body);
   setPoint(lat, lon > 180 ? lon - 360 : lon, text);
 };
-window.showSite = (id) => selectSite(SITES.findIndex(s => String(s.id) === String(id)));
+window.showSite = (id) => selectSite(findSite(id));
 
 switchBody(key);
 loadSites().then(applyUrlParameters);
