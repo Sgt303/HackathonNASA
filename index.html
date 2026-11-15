@@ -291,7 +291,7 @@ function normalizeSite(r) {
     id = r.id; body = r.body || (r.moon && !r.mars && !r.site ? 'moon' : 'mars');
     m = r.site || r.mars || r.moon; e = r.earth; profile = r.profile;
     extra = { source: r.source || null, square: r.square, dist: r.dist, dist_rel: r.dist_rel, earthProfile: r.earth_profile || null };
-    const mq = /kwadrat\s+(\d+)/.exec((m && m.name) || '');                                   // older sites.json: square from the name
+    const mq = /square\s+(\d+)/.exec((m && m.name) || '');                                   // older sites.json: square from the name
     if (extra.square == null && mq) extra.square = +mq[1];
   } else return null;
   body = String(body || 'mars').toLowerCase();
