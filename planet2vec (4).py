@@ -868,21 +868,15 @@ def chunk_centers(rasters):
                     "height_km": hk, "width_km": wk, "area_km2": hk * wk})
     return out
 
-from google.colab import drive
-drive.mount('/content/drive')
 
-import os
-FOLDER = "/content/drive/MyDrive/Colab Notebooks"
-print(os.listdir(FOLDER))     # tu zobaczysz prawdziwe nazwy plików, w tym Księżyca
+CACHE = f"/earth/{BODY}/prepared_200m_bare"
+chunks = [f"earth/NASADEM/chunk_{c}.tif" for c in "ABC"]
+#prepare_earth_chunks(chunks, CACHE, target_m=200, use_mask=True, show=False)
 
-CACHE = f"{FOLDER}/earth/prepared_200m_bare"
-chunks = [f"{FOLDER}/earth/NASADEM/chunk_{c}.tif" for c in "ABC"]
-prepare_earth_chunks(chunks, CACHE, target_m=200, use_mask=True, show=False)
-
-MARS = "/content/drive/MyDrive/Colab Notebooks/mars_sites/mars_sites_elevation/Ismanius_Cavus.tif"
-
+MARS = f"/content/drive/MyDrive/Colab Notebooks/{BODY}_sites/{BODY}_sites_elevation/{SITE}.tif"
+pixel_m = 200 if BODY == 'mars' else 40
 db, q, order, dist, earth_ts, moon_t, qs, results = find_analogs_multi(
-    CACHE, MARS, pixel_m=200, name="Ismanius_Cavus", k=5, samples=3,
+    CACHE, MARS, pixel_m=pixel_m, name=SITE, k=5, samples=3,
 )
 
 squares = collect_hits(db, qs, results, tgt_t)
