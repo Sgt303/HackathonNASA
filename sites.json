@@ -1,7 +1,8 @@
 [
   {
     "id": 1,
-    "mars": {
+    "body": "mars",
+    "site": {
       "name": "Starship proposed landing site",
       "lat": 39.8,
       "lon": -157.39
@@ -10,6 +11,20 @@
       "name": "Mars Desert Research Station",
       "lat": 38.4053,
       "lon": -110.79
+    }
+  },
+  {
+    "id": 2,
+    "body": "moon",
+    "site": {
+      "name": "Tranquility Base",
+      "lat": 0.6741,
+      "lon": 23.4729
+    },
+    "earth": {
+      "name": "Mauna Kea",
+      "lat": 19.8207,
+      "lon": -155.4681
     }
   }
 ]
