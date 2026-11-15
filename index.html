@@ -8,6 +8,7 @@
 <link href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="recalc.js"></script>
 <style>
   html, body { height: 100%; margin: 0; }
   body { display: flex; flex-direction: column; background: #000; color: #eee; font-family: system-ui, sans-serif; }
@@ -20,6 +21,10 @@
   button { padding: .35rem .8rem; cursor: pointer; border: 1px solid #666; background: #222; color: #eee; border-radius: 4px; }
   button.active { background: #c1440e; border-color: #c1440e; }
   input[type=number] { width: 6rem; padding: .3rem; }
+  #weights { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding-left: .9rem; border-left: 1px solid #333; }
+  #weights input[type=number] { width: 4.2rem; }
+  #weights button:disabled { opacity: .5; cursor: default; }
+  #wstatus { color: #aaa; font-size: .85rem; }
   select { max-width: 22rem; padding: .3rem; background: #222; color: #eee; border: 1px solid #666; border-radius: 4px; }
   label { white-space: nowrap; }
 
@@ -28,7 +33,7 @@
   #globe, #earth { position: absolute; inset: 0; }
   #left { border-right: 2px solid #333; }
   /* Popup on the globe: same look as the Leaflet popup on the Earth map */
-  .gpop { position: absolute; left: 0; top: 0; z-index: 1000; width: max-content; max-width: 346px;
+  .gpop { position: absolute; left: 0; top: 0; z-index: 1000; width: max-content; max-width: 580px;
     text-align: center; font: 12px/1.5 "Helvetica Neue", Arial, Helvetica, sans-serif; color: #333; }
   .gpop-box { position: relative; background: #fff; border-radius: 12px; padding: 1px; text-align: left;
     box-shadow: 0 3px 14px rgba(0, 0, 0, .4); }
@@ -38,7 +43,9 @@
   .gpop-x:hover { color: #585858; }
   .info details { margin-top: 6px; }
   .info summary { cursor: pointer; color: #0078a8; }
-  .info img { display: block; width: 280px; max-width: 100%; margin-top: 6px; }
+  .info img { display: block; width: min(520px, 78vw); margin-top: 6px; }
+  .info .noimg { margin-top: 6px; color: #888; max-width: 280px; }
+  .info .dist { color: #666; }
   .gpop-tipc { position: absolute; left: 50%; width: 40px; height: 20px; margin-left: -20px; margin-top: -1px;
     overflow: hidden; pointer-events: none; }
   .gpop-tip { width: 17px; height: 17px; padding: 1px; margin: -10px auto 0; background: #fff;
@@ -65,6 +72,16 @@
     <label>Lat <input type="number" id="lat" value="18.38" step="any"></label>
     <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
     <button id="go">Go</button>
+  </span>
+  <span id="weights" title="Weights of the four feature blocks used to compare terrain windows (BLOCK_W in planet2vec.py)">
+    <b>Weights</b>
+    <label>Elev. scale <input type="number" id="w_elev_scale" min="0" step="any"></label>
+    <label>Elev. shape <input type="number" id="w_elev_shape" min="0" step="any"></label>
+    <label>Slope <input type="number" id="w_slope" min="0" step="any"></label>
+    <label>Orientation <input type="number" id="w_orient" min="0" step="any"></label>
+    <button id="recalc">Recalculate</button>
+    <button id="wreset" title="Back to the weights and matches computed by planet2vec.py">Reset</button>
+    <span id="wstatus"></span>
   </span>
 </div>
 
@@ -203,19 +220,20 @@ function clearSelection() {
 
 /* ---------- Popup content (shared by the globe and the Earth map) ---------- */
 // Name + coordinates and, if the site has a profile picture, a collapsible "Details..." with the image
-function infoContent(name, lat, lon, profile, onResize) {
+function infoContent(name, lat, lon, profile, onResize, extra, noImageMsg) {
   onResize = onResize || (() => {});
   const box = document.createElement('div');
   box.className = 'info';
   const head = document.createElement('div');
-  head.innerHTML = '<b>' + esc(name) + '</b><br>' + fmt(lat, lon);
+  head.innerHTML = '<b>' + esc(name) + '</b><br>' + fmt(lat, lon) +
+    (extra ? '<br><span class="dist">' + esc(extra) + '</span>' : '');
   box.appendChild(head);
   if (profile) {
     const det = document.createElement('details');
     const sum = document.createElement('summary');
     sum.textContent = 'Details...';
     const img = document.createElement('img');
-    img.alt = 'Elevation profile: ' + name;
+    img.alt = 'Terrain profile: ' + name;
     img.loading = 'lazy';
     img.onload = onResize;
     img.onerror = () => {
@@ -225,9 +243,16 @@ function infoContent(name, lat, lon, profile, onResize) {
       onResize();
     };
     img.src = encodeURI(profile);
-    det.append(sum, img);
+    const link = document.createElement('a');            // click the picture = open it full size
+    link.href = encodeURI(profile); link.target = '_blank'; link.rel = 'noopener'; link.title = 'Open full size';
+    link.appendChild(img);
+    det.append(sum, link);
     det.addEventListener('toggle', onResize);
     box.appendChild(det);
+  } else if (noImageMsg) {
+    const m = document.createElement('div');
+    m.className = 'noimg'; m.textContent = noImageMsg;
+    box.appendChild(m);
   }
   return box;
 }
@@ -258,13 +283,16 @@ function updateGlobePopup() {
 // "earth" may be missing/null (site shown on the globe only); a missing name falls back to the id.
 // Older files with a "mars" or "moon" key instead of "site" also work.
 function normalizeSite(r) {
-  let id, body, m, e, profile;
+  let id, body, m, e, profile, extra = {};
   if (Array.isArray(r) && r.length >= 7) {
     id = r[0]; body = r[7]; profile = r[8];
     m = { name: r[1], lat: r[2], lon: r[3] }; e = { name: r[4], lat: r[5], lon: r[6] };
   } else if (r && (r.site || r.mars || r.moon)) {
     id = r.id; body = r.body || (r.moon && !r.mars && !r.site ? 'moon' : 'mars');
     m = r.site || r.mars || r.moon; e = r.earth; profile = r.profile;
+    extra = { source: r.source || null, square: r.square, dist: r.dist, dist_rel: r.dist_rel, earthProfile: r.earth_profile || null };
+    const mq = /kwadrat\s+(\d+)/.exec((m && m.name) || '');                                   // older sites.json: square from the name
+    if (extra.square == null && mq) extra.square = +mq[1];
   } else return null;
   body = String(body || 'mars').toLowerCase();
   if (!BODIES[body]) return null;
@@ -275,8 +303,37 @@ function normalizeSite(r) {
     let lon = +p.lon; if (lon > 180) lon -= 360;
     return { name: p.name ? String(p.name) : String(id), lat: +p.lat, lon };
   };
-  return { id, body, site: fix(m), earth: has(e) ? fix(e) : null, profile: profile ? String(profile) : null };
+  return { id, body, site: fix(m), earth: has(e) ? fix(e) : null, profile: profile ? String(profile) : null, ...extra };
 }
+
+/* Profile pictures (made by `node recalc.js profiles`):
+   - Mars/Moon square:  profiles/<body>/<source>_<square>.png
+   - Earth window:      profiles/earth/<file> found through profiles/earth/index.json (key = body|lat|lon) */
+let EARTH_INDEX = null;
+async function loadEarthIndex() {
+  try {
+    const r = await fetch('profiles/earth/index.json', { cache: 'no-store' });
+    if (r.ok) EARTH_INDEX = await r.json();
+  } catch (err) { /* no pictures generated yet */ }
+}
+function siteProfile(s) {
+  if (s.profile) return s.profile;
+  return s.source && s.square != null ? Planet2Vec.queryProfilePath(s.body, s.source, s.square) : null;
+}
+function earthProfile(s) {
+  if (s.earthProfile) return s.earthProfile;
+  if (s.earth && EARTH_INDEX) {
+    for (const da of [0, 1e-4, -1e-4]) for (const dn of [0, 1e-4, -1e-4]) {
+      const f = EARTH_INDEX[Planet2Vec.key4(s.body, s.earth.lat + da, s.earth.lon + dn)];
+      if (f) return 'profiles/earth/' + f;
+    }
+  }
+  return s.source ? null : s.profile;                    // hand-made entries: one picture for both sides
+}
+const earthNoImage = () => EARTH_INDEX
+  ? 'No picture for this Earth window (it is outside the pre-rendered set).'
+  : 'Pictures not generated yet - run: node recalc.js profiles';
+const distText = (s) => s.dist != null ? 'distance ' + s.dist.toFixed(2) + ' (' + s.dist_rel.toFixed(2) + 'x median)' : '';
 
 async function loadSites() {
   const url = new URLSearchParams(location.search).get('data') || SITES_URL;
@@ -345,7 +402,7 @@ function selectSite(i) {
 
   // Globe side: highlighted pin + popup with name, coordinates and (if any) the profile picture
   addPin(m.lat, m.lon, Cesium.Color.YELLOW, 14);
-  showGlobePopup(m.name, m.lat, m.lon, s.profile);
+  showGlobePopup(m.name, m.lat, m.lon, siteProfile(s));
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, B.flyHeight, ellipsoid), duration: 2
   });
@@ -355,8 +412,8 @@ function selectSite(i) {
     // Earth side: highlighted marker + popup
     L.circleMarker([e.lat, e.lon], { radius: 10, color: '#fff', weight: 2, fillColor: '#ff0', fillOpacity: 1 }).addTo(overlay);
     earth.setView([e.lat, e.lon], EARTH_ZOOM);
-    const pop = L.popup({ autoClose: false, closeOnClick: false, offset: [0, -6] }).setLatLng([e.lat, e.lon]);
-    pop.setContent(infoContent(e.name, e.lat, e.lon, s.profile, () => pop.update())).openOn(earth);
+    const pop = L.popup({ autoClose: false, closeOnClick: false, offset: [0, -6], maxWidth: 580 }).setLatLng([e.lat, e.lon]);
+    pop.setContent(infoContent(e.name, e.lat, e.lon, earthProfile(s), () => pop.update(), distText(s), earthNoImage())).openOn(earth);
     text += '  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')';
   } else {
     text += '  (no Earth counterpart)';
@@ -382,7 +439,7 @@ const tabs = $('tabs');
 ENABLED.forEach(k => {
   const b = document.createElement('button');
   b.textContent = BODIES[k].label; b.dataset.k = k;
-  b.onclick = () => switchBody(k);
+  b.onclick = () => { switchBody(k); if (customWeights) recalcBody(k, customWeights).catch(weightsError); };
   tabs.appendChild(b);
 });
 
@@ -411,6 +468,59 @@ $('go').onclick = () => {
   if (lon > 180) lon -= 360;
   setPoint(lat, lon);
 };
+
+/* ---------- Weights and recalculation (recalc.js) ---------- */
+// Same algorithm as planet2vec.py (search + collect_hits), but with weights chosen here. Needs features/<body>.*
+// made by `python planet2vec.py --features`.
+const WKEYS = Planet2Vec.BLOCKS;
+const FEATURES_URL = 'features/';
+const featureDb = {};                         // body -> Promise<db>
+let DEFAULTS = { ...Planet2Vec.DEFAULT_WEIGHTS };
+let customWeights = null;                     // null = weights from planet2vec.py
+let busy = false;
+
+const readWeights = () => Object.fromEntries(WKEYS.map(b => [b, parseFloat($('w_' + b).value)]));
+const writeWeights = (w) => WKEYS.forEach(b => { $('w_' + b).value = w[b]; });
+const sameWeights = (a, b) => WKEYS.every(k => Math.abs(a[k] - b[k]) < 1e-12);
+const wstatus = (t) => { $('wstatus').textContent = t || ''; };
+const setBusy = (v) => { busy = v; $('recalc').disabled = v; $('wreset').disabled = v; };
+const weightsError = (err) => { setBusy(false); wstatus(err.message + (/HTTP|fetch|Failed/i.test(err.message) ? ' - run: python planet2vec.py --features' : '')); };
+
+function getFeatures(body) {
+  if (!featureDb[body]) featureDb[body] = Planet2Vec.loadFeatures(body, FEATURES_URL).catch(err => { delete featureDb[body]; throw err; });
+  return featureDb[body];
+}
+
+async function recalcBody(body, w) {
+  setBusy(true);
+  wstatus('Loading ' + BODIES[body].label + ' features...');
+  const db = await getFeatures(body);
+  DEFAULTS = Planet2Vec.defaultWeights(db);
+  wstatus('Computing...');
+  await new Promise(r => setTimeout(r, 30));          // let the status paint before the heavy loop
+  const t0 = performance.now();
+  const entries = Planet2Vec.computeEntries(db, w).map(normalizeSite).filter(Boolean);
+  const ms = performance.now() - t0;
+  SITES = SITES.filter(s => s.body !== body).concat(entries);
+  if (body === key) { clearSelection(); refreshSites(); }
+  customWeights = sameWeights(w, DEFAULTS) ? null : { ...w };
+  setBusy(false);
+  wstatus(BODIES[body].label + ': ' + entries.length + ' matches, ' + Math.round(ms) + ' ms' + (customWeights ? '' : ' (default weights)'));
+}
+
+$('recalc').onclick = () => {
+  const w = readWeights();
+  try { Planet2Vec.validateWeights(w); } catch (err) { wstatus(err.message); return; }
+  recalcBody(key, w).catch(weightsError);
+};
+$('wreset').onclick = async () => {
+  writeWeights(DEFAULTS);
+  customWeights = null;
+  clearSelection();
+  await loadSites();                                  // back to the matches saved in sites.json
+  wstatus('Weights reset.');
+};
+writeWeights(DEFAULTS);
 
 /* ---------- Input from outside ---------- */
 //   index.html?site=1                                   (select a site by its id; add &body=moon for the Moon)
@@ -441,7 +551,7 @@ window.showPlace = function (body, lat, lon, text) {
 window.showSite = (id) => selectSite(findSite(id));
 
 switchBody(key);
-loadSites().then(applyUrlParameters);
+Promise.all([loadSites(), loadEarthIndex()]).then(applyUrlParameters);
 </script>
 </body>
 </html>
