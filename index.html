@@ -56,8 +56,6 @@
   <span id="tabs"></span>
   <label>Site <select id="site"><option value="">- choose a site -</option></select></label>
   <span>
-    <label><input type="radio" name="mode" value="point" checked> Point</label>
-    <label><input type="radio" name="mode" value="square"> Square (2 corners)</label>
     <button id="clear">Clear</button>
   </span>
   <span>
@@ -65,7 +63,6 @@
     <label>Lon <input type="number" id="lon" value="77.58" step="any"></label>
     <button id="go">Go</button>
   </span>
-  <label>Earth zoom <input type="range" id="zoom" min="3" max="17" value="13"> <span id="zoomVal">13</span></label>
 </div>
 
 <div id="split">
@@ -84,6 +81,8 @@
 /* ---------- Settings ---------- */
 const ENABLED = ['mars', 'moon'];
 const SITES_URL = 'sites.json';           // made by export_sites.py (can be overridden with ?data=other.json)
+
+const EARTH_ZOOM = 13;                    // Earth map zoom when a site is selected
 
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
@@ -114,11 +113,10 @@ const BODIES = {
 
 let key = ENABLED[0], B = BODIES[key];
 let viewer = null, handler = null, ellipsoid = null;
-let selection = null, cornerA = null, entities = [];
+let entities = [];
 let SITES = [], siteEntities = [], popupPos = null;
 
 const $ = (id) => document.getElementById(id);
-const mode = () => document.querySelector('input[name=mode]:checked').value;
 const setText = (t) => { $('text').textContent = t; };
 const HINT = 'Drag the globe to rotate, scroll to zoom, click a site or any other place.';
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -129,20 +127,6 @@ const earth = L.map('earth').setView([20, 0], 2);
 L.tileLayer(ESRI, { maxZoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics' }).addTo(earth);
 const siteLayer = L.layerGroup().addTo(earth);   // all test sites
 const overlay = L.layerGroup().addTo(earth);     // current selection
-
-function updateEarth() {
-  overlay.clearLayers();
-  if (!selection) return;
-  if (selection.type === 'point') {
-    L.circleMarker([selection.lat, selection.lon],
-      { radius: 8, color: '#fff', weight: 2, fillColor: '#f00', fillOpacity: 1 }).addTo(overlay);
-    earth.setView([selection.lat, selection.lon], +$('zoom').value);
-  } else if (selection.type === 'square') {
-    const b = [[selection.s, selection.w], [selection.n, selection.e]];
-    L.rectangle(b, { color: '#f00', weight: 2, fillOpacity: 0.1 }).addTo(overlay);
-    earth.fitBounds(b);
-  }
-}
 
 /* ---------- Left side: Mars / Moon globe ---------- */
 function buildGlobe() {
@@ -185,28 +169,14 @@ function buildGlobe() {
 }
 
 function onGlobeClick(click) {
-  // Clicking one of the test sites (point mode only)
-  if (mode() === 'point') {
-    const picked = viewer.scene.pick(click.position);
-    if (picked && picked.id && picked.id.siteIdx !== undefined) { selectSite(picked.id.siteIdx); return; }
-  }
+  // Clicking one of the test sites
+  const picked = viewer.scene.pick(click.position);
+  if (picked && picked.id && picked.id.siteIdx !== undefined) { selectSite(picked.id.siteIdx); return; }
+  // Clicking anywhere else: custom point on the globe only
   const cart = viewer.camera.pickEllipsoid(click.position, ellipsoid);
   if (!cart) return;
   const c = Cesium.Cartographic.fromCartesian(cart, ellipsoid);
-  const lon = Cesium.Math.toDegrees(c.longitude);
-  const lat = Cesium.Math.toDegrees(c.latitude);
-
-  if (mode() === 'point') {
-    setPoint(lat, lon);
-  } else if (!cornerA) {
-    clearSelection();
-    cornerA = { lat, lon };
-    addPin(lat, lon, Cesium.Color.YELLOW, 8);
-    setText('First corner set. Click the opposite corner.');
-  } else {
-    setSquare(Math.min(cornerA.lon, lon), Math.min(cornerA.lat, lat),
-              Math.max(cornerA.lon, lon), Math.max(cornerA.lat, lat));
-  }
+  setPoint(Cesium.Math.toDegrees(c.latitude), Cesium.Math.toDegrees(c.longitude));
 }
 
 function addPin(lat, lon, color, size) {
@@ -220,7 +190,7 @@ function addPin(lat, lon, color, size) {
 
 function clearSelection() {
   if (viewer) entities.forEach(e => viewer.entities.remove(e));
-  entities = []; selection = null; cornerA = null;
+  entities = [];
   overlay.clearLayers();
   earth.closePopup();
   hideGlobePopup();
@@ -329,7 +299,6 @@ function selectSite(i) {
   if (!s) return;
   if (key !== s.body) switchBody(s.body);
   clearSelection();
-  selection = { type: 'site', i };
   $('site').value = i;
   const m = s.site, e = s.earth;
 
@@ -342,7 +311,7 @@ function selectSite(i) {
 
   // Earth side: highlighted marker + popup with name and coordinates
   L.circleMarker([e.lat, e.lon], { radius: 10, color: '#fff', weight: 2, fillColor: '#ff0', fillOpacity: 1 }).addTo(overlay);
-  earth.setView([e.lat, e.lon], +$('zoom').value);
+  earth.setView([e.lat, e.lon], EARTH_ZOOM);
   L.popup({ autoClose: false, closeOnClick: false, offset: [0, -6] })
     .setLatLng([e.lat, e.lon])
     .setContent('<b>' + esc(e.name) + '</b><br>' + fmt(e.lat, e.lon))
@@ -351,10 +320,9 @@ function selectSite(i) {
   setText('Site ' + s.id + ': ' + B.label + ' - ' + m.name + ' (' + fmt(m.lat, m.lon) + ')  \u2194  Earth - ' + e.name + ' (' + fmt(e.lat, e.lon) + ')');
 }
 
-/* ---------- Selecting any place (clicks, the Go button, URL) ---------- */
+/* ---------- Selecting any place (globe click, Go button, URL): shown on the globe only ---------- */
 function setPoint(lat, lon, customText) {
   clearSelection();
-  selection = { type: 'point', lat, lon };
   addPin(lat, lon, Cesium.Color.RED, 12);
   $('lat').value = lat.toFixed(4);
   $('lon').value = lon.toFixed(4);
@@ -363,23 +331,6 @@ function setPoint(lat, lon, customText) {
     destination: Cesium.Cartesian3.fromDegrees(lon, lat, B.flyHeight, ellipsoid),
     duration: 2
   });
-  updateEarth();
-}
-
-function setSquare(w, s, e, n, customText) {
-  clearSelection();
-  selection = { type: 'square', w, s, e, n };
-  entities.push(viewer.entities.add({
-    rectangle: {
-      coordinates: Cesium.Rectangle.fromDegrees(w, s, e, n),
-      material: Cesium.Color.RED.withAlpha(0.3),
-      outline: true, outlineColor: Cesium.Color.RED
-    }
-  }));
-  setText(customText || ('You selected an area on ' + B.label + ' from ' + w.toFixed(2) + ', ' + s.toFixed(2) +
-                         ' to ' + e.toFixed(2) + ', ' + n.toFixed(2) + ' (lon/lat).'));
-  viewer.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(w, s, e, n), duration: 2 });
-  updateEarth();
 }
 
 /* ---------- Tabs and UI ---------- */
@@ -393,7 +344,7 @@ ENABLED.forEach(k => {
 
 function switchBody(k) {
   key = k; B = BODIES[k];
-  selection = null; cornerA = null; entities = []; siteEntities = [];
+  entities = []; siteEntities = [];
   overlay.clearLayers();
   earth.closePopup();
   $('site').value = '';
@@ -404,18 +355,8 @@ function switchBody(k) {
   setText(HINT);
 }
 
-document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', clearSelection));
 $('clear').onclick = clearSelection;
 $('site').onchange = () => { if ($('site').value !== '') selectSite(+$('site').value); };
-
-$('zoom').addEventListener('input', () => {
-  $('zoomVal').textContent = $('zoom').value;
-  if (selection && selection.type === 'point') updateEarth();
-  if (selection && selection.type === 'site') {
-    const e = SITES[selection.i].earth;
-    earth.setView([e.lat, e.lon], +$('zoom').value);
-  }
-});
 
 $('go').onclick = () => {
   let lat = parseFloat($('lat').value), lon = parseFloat($('lon').value);
@@ -430,16 +371,11 @@ $('go').onclick = () => {
 /* ---------- Input from outside ---------- */
 //   index.html?site=1                                   (select a site by its id; add &body=moon for the Moon)
 //   index.html?data=other.json                          (use another data file)
-//   index.html?body=mars&lat=18.38&lon=77.58&text=Jezero%20Crater&zoom=12
-//   index.html?body=mars&w=75&s=15&e=80&n=20            (a square: west, south, east, north)
+//   index.html?body=mars&lat=18.38&lon=77.58&text=Jezero%20Crater
 function applyUrlParameters() {
   const P = new URLSearchParams(location.search);
   const want = P.get('body');
   if (want && BODIES[want] && ENABLED.includes(want) && want !== key) switchBody(want);
-  if (P.has('zoom')) {
-    const z = Math.min(17, Math.max(3, parseInt(P.get('zoom'), 10) || 13));
-    $('zoom').value = z; $('zoomVal').textContent = z;
-  }
   const num = (name) => parseFloat(P.get(name));
   const text = P.get('text') || undefined;
   if (P.has('site')) {
@@ -451,9 +387,6 @@ function applyUrlParameters() {
       if (lon > 180) lon -= 360;
       setPoint(lat, lon, text);
     }
-  } else if (P.has('w') && P.has('s') && P.has('e') && P.has('n')) {
-    const w = num('w'), s = num('s'), e = num('e'), n = num('n');
-    if ([w, s, e, n].every(v => !isNaN(v)) && w < e && s < n) setSquare(w, s, e, n, text);
   }
 }
 
